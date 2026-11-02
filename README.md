@@ -24,7 +24,7 @@ Initially beads inside a spherical volume centered on 0,0,0 is shown with a cert
 
 You can store views (rotation, center position) with shift+ 1-9, and restore a view with 1-9. This creates smooth transitions between the stored views. Use m/M to start/stop recording movies. p to save a png image. s to save a dump file of what is inside the volume.
 
-** Note **: The script becomes very slow if you render all beads in the melt, or if you by accident start the PPA dynamics which is very experimental. Recording movies while manually rotating the view does not work very well.
+** Note ** : The script becomes very slow if you render all beads in the melt, or if you by accident start the PPA dynamics which is very experimental. Recording movies while manually rotating the view does not work very well.
 
 ## beadppa.py
 
@@ -53,11 +53,11 @@ of closest approach of what would be the beads in a beadppa.
 
 I am currently working on how to update this vector to model entanglement destruction. Subtle...
 
-** todo **: No support for cross-links or handling collisions between entanglements.
+** todo ** : No support for cross-links or handling collisions between entanglements.
 
 ## cylinderppa.py  Cylinder model
 
-** todo **: Not implemented at all.
+** todo ** : Not implemented at all.
 
 I have not yet looked into this. The vertex model is complicated because you can create composite vertices of entanglement and cross-link vertices, because lines have zero width, and implementing each of these (up to some level of complexity) is nasty. On the other hand the graph structure of the resulting mesh is very natural and coarse-grained description of the physics. 
 
