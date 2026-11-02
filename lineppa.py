@@ -27,12 +27,14 @@ Junction vector: when a junction is formed, the vector between the two closest p
 two segments (from the point on the first molecule to the point on the second) is stored with
 the junction. It is drawn as a short orange arrow, parallel to the vector (pointing the same
 way) and centered on the junction (length JUNCTION_VECTOR_SCALE * |vector|, at least MIN_JUNCTION_VECTOR_LENGTH).
-Release criterion: let A and B be the two molecules at a junction (A = the first, B = the
+Contact dynamics: let A and B be the two molecules at a junction (A = the first, B = the
 second), v the stored junction vector (from the closest point on A to the closest point on B),
 FA the net force from the springs of A on the junction and FB the net force from those of B.
-A junction is deleted (from both molecules) as soon as FA . v < -breakage_threshold or
-FB . v > breakage_threshold (the projections are the force components along v, in force units).
-While two segments of different molecules are closer than 2 (and not joined at a junction),
+Every step w = 0.5 (FA - FB) is computed. If the projection of w along v is positive (the chains
+are pressed against each other) v is replaced by a vector along w with length min_distance. If
+the projection is zero or negative the junction is removed from both molecules. A junction is
+created when two segments come closer than min_distance.
+While two segments of different molecules are closer than PROXIMITY_DISTANCE (and not joined),
 their two closest points are connected by a thin black dotted line. Crossing lines
 are created by dragging the chain ends around.
 
@@ -71,6 +73,7 @@ Keyboard
                      it joined add up). The two molecules do not form a new junction until
                      they have separated, otherwise it would reappear immediately.
 - a  -> create a new molecule: a straight line between two free spots on the surface
+- t  -> draw all lines thin, with the same radius;  T -> back to the thickness showing the tension
 - r  -> shrink the spherical volume by 1 (down to a minimum radius of 5)
 - R  -> grow the spherical volume by 1
 - Shift + 1..9 -> store the current positions of all chain ends in slot 1..9
@@ -113,6 +116,11 @@ KEYBOARD_LAYOUT = "nordic"
 ACTIVE_COLOR = (0.0, 0.0, 0.0)  # highlight color while a sphere is being dragged
 
 CONTOUR_STEP = 2.0              # contour length added/removed per press of Right/Left arrow
+INITIAL_ZOOM = 1.6              # camera zoom when the window opens
+MIN_DISTANCE = 1.0              # junctions form when two segments come closer than this; the two
+                                # chains of a junction are then held exactly this far apart
+PROXIMITY_DISTANCE = 2.0        # nearby (not joined) segments get a dotted line below this distance
+THIN_LINE_RADIUS = 0.05         # tube radius of all lines after pressing t
 TENSION_THICKNESS = 0.01        # tube radius of a segment per unit of spring tension
 FORCE_ARROW_SCALE = 0.1         # length of a force arrow per unit of force
 FORCE_ARROW_WIDTH = 2.5         # width of the arrows with the force of one molecule at a junction
@@ -162,7 +170,7 @@ class SphereDragger:
     CONF_PATTERN = re.compile(r"^conf(\d{5})\.dump$")
     MOVIE_PATTERN = re.compile(r"^movie(\d{5})\.avi$")
     # characters whose built-in VTK meaning (reset camera, surface mode, pick, ...) is suppressed
-    OWN_CHARS = frozenset("aAdDpPsSmMrRxX123456789")
+    OWN_CHARS = frozenset("aAdDpPsSmMrRtTxX123456789")
 
     def __init__(self, plotter, template, actors, positions, moleculeids,
                  center, radius, sphere_radius, recall_speed=0.5, movie_fps=30, rng=None,
@@ -171,7 +179,7 @@ class SphereDragger:
                  on_drag=None, on_release=None,
                  on_add_molecule=None, on_delete_molecule=None,
                  on_radius_change=None, on_ends_driven=None, on_ends_released=None,
-                 on_contour_change=None, on_remove_junction=None):
+                 on_contour_change=None, on_remove_junction=None, initial_zoom=INITIAL_ZOOM):
         self.plotter = plotter
         self.renderer = plotter.renderer
         self.template = template        # sphere mesh used for newly created beads
@@ -221,6 +229,8 @@ class SphereDragger:
         self.picker = vtk.vtkPropPicker()
         self.dragged = None             # index of the chain end being dragged
         self.selected_junction = None   # index of the junction being held (left button down)
+        self.uniform_lines = False      # True after t: all lines thin and equally thick
+        self._pending_zoom = initial_zoom   # applied on the first timer tick, after the window opened
         self._side = 1                  # +1: dragged bead on the front (camera) side, -1: back
         self._flip_armed = True         # a Shift + "touch the edge" gesture may flip the side
         self.stored = {}                # slot (1..9) -> {(moleculeid, is_start): unit vector}
@@ -281,7 +291,7 @@ class SphereDragger:
 
         # Make sure PyVista's own key shortcuts for the keys we use don't also fire.
         for key in ("Up", "Down", "Left", "Right", "a", "d", "p", "s", "S", "m", "M",
-                    "r", "R", "x", "X", *"123456789"):
+                    "r", "R", "t", "T", "x", "X", *"123456789"):
             try:
                 plotter.clear_events_for_key(key)
             except Exception:
@@ -311,6 +321,9 @@ class SphereDragger:
             return
         self._in_tick = True
         try:
+            if self._pending_zoom is not None:
+                self.renderer.GetActiveCamera().Zoom(self._pending_zoom)
+                self._pending_zoom = None
             self.animate()
             self.set_positions(step_simulation())
             self.write_movie_frame()
@@ -344,6 +357,8 @@ class SphereDragger:
 
     def _segment_radii(self):
         """Tube radius of every segment (order of self._seg_nodes) from its spring tension."""
+        if self.uniform_lines:
+            return np.full(len(self._seg_tension), THIN_LINE_RADIUS)
         return np.minimum(TENSION_THICKNESS * np.array(self._seg_tension, dtype=float),
                           MAX_LINE_RADIUS)
 
@@ -962,6 +977,10 @@ class SphereDragger:
             self._change_radius(-VOLUME_RADIUS_STEP)
         elif key == "R":
             self._change_radius(+VOLUME_RADIUS_STEP)
+        elif key in ("t", "T"):
+            self.uniform_lines = key == "t"        # t: thin, equal lines; T: thickness = tension
+            self._pull_network()
+            self.plotter.render()
         elif key == "m":
             self._start_movie()
         elif key == "M":
@@ -1033,13 +1052,13 @@ class DummySimulation:
 
     Junctions: when two line segments of two different molecules intersect, a junction
     node is inserted into BOTH molecules at the intersection point (each molecule gets a
-    bend there). Intersection is detected when
+    bend there). A junction forms when
       * the closest points of the two segments (both strictly inside the segments) are
-        closer than `join_tolerance`, or
+        closer than `min_distance`, or
       * the two segments passed through each other since the previous step (the sign of
         their signed separation along the common normal flipped) and are now closer
-        than `crossing_tolerance` - this catches fast crossings that the tolerance test
-        alone would miss.
+        than `crossing_tolerance` (at least `min_distance`) - this catches fast crossings that
+        the distance test alone would miss.
     Each junction has four springs, one along each of the four segments connected to it
     (previous and next node of both molecules). A spring has zero rest length and the
     spring constant  k = spring_constant / contour_length  of its segment, so its tension is
@@ -1061,35 +1080,37 @@ class DummySimulation:
     energies, slip, intersection and proximity detection) uses the chain's own shifted node
     positions; the junction position J itself moves under the sum of the forces of both chains.
 
-    Breakage: a junction is deleted when FA . v < -breakage_threshold or FB . v > breakage_threshold,
-    with v the stored junction vector (closest point on molecule A -> closest point on molecule B)
-    and FA, FB the net spring forces of A and B on the junction (see `junction_forces`). The
-    projections are the components of the forces along v / |v|, so the threshold is a force. As
-    after a removal by the user, the two molecules cannot form a new junction until they have
-    stopped intersecting.
+    Contact dynamics of v: with w = 0.5 * (FA - FB), FA and FB the net spring forces of A and B
+    on the junction (see `junction_forces`) and v the stored junction vector (closest point on
+    molecule A -> closest point on molecule B): if w . v > 0 then v becomes min_distance * w / |w|,
+    otherwise (zero or negative) the junction is removed from both molecules. |w| below
+    `force_tolerance` counts as zero, and if v itself has zero length its direction is
+    undefined, so w alone decides (v = min_distance * w / |w|, or removal if w = 0). As after a
+    removal by the user, the two molecules cannot form a new junction until they are
+    further apart than min_distance.
 
     Proximity: pairs of segments of different molecules that are closer than
     `proximity_distance` and not joined at a junction are reported by `proximity()`
     (the two closest points of the segments), for drawing."""
 
     def __init__(self, positions, moleculeids, center, radius, bead_radius, substeps=5,
-                 spring_rate=0.02, join_tolerance=0.3, crossing_tolerance=2.0,
-                 min_contour_length=0.5, spring_constant=30.0, proximity_distance=2.0,
-                 slip_rate=0.02, breakage_threshold=5.0):
+                 spring_rate=0.02, min_distance=MIN_DISTANCE, crossing_tolerance=2.0,
+                 min_contour_length=0.5, spring_constant=30.0,
+                 proximity_distance=PROXIMITY_DISTANCE, slip_rate=0.02, force_tolerance=1e-9):
         self.x = np.array(positions, dtype=float).reshape(-1, 3)   # chain ends (n, 3)
         self.moleculeids = np.array(moleculeids, dtype=np.uint32)
         self.center = np.asarray(center, dtype=float)
         self.radius = float(radius)
         self.bead_radius = float(bead_radius)
-        self.min_distance = 2.0 * self.bead_radius  # centres closer than this = overlap
+        self.bead_distance = 2.0 * self.bead_radius  # chain ends closer than this = overlap
         self.substeps = substeps        # dynamics substeps per viewer update
         self.spring_rate = float(spring_rate)       # mobility: speed of the junctions
         self.spring_constant = float(spring_constant)   # segment spring constant = this / contour length
         self.proximity_distance = float(proximity_distance)
-        self.breakage_threshold = float(breakage_threshold)   # force along v that breaks a junction
+        self.force_tolerance = float(force_tolerance)   # forces smaller than this count as zero
         self.slip_rate = float(slip_rate)           # speed of contour length slipping across junctions
         self.near = []                  # [(molecule_a, molecule_b, point_a, point_b)]
-        self.join_tolerance = float(join_tolerance)
+        self.min_distance = float(min_distance)     # junctions form below this distance; |v| = this
         self.crossing_tolerance = float(crossing_tolerance)
         self.held = set()               # beads currently controlled by the viewer
 
@@ -1166,20 +1187,25 @@ class DummySimulation:
         self._suppressed.add(frozenset(mols))
         self._prev_sign = {}
 
-    def _release_junctions(self):
-        """Delete every junction for which FA . v < -breakage_threshold or
-        FB . v > breakage_threshold (see the class docstring)."""
+    def _update_vectors(self):
+        """Contact dynamics of the junction vectors (see the class docstring): with
+        w = 0.5 * (FA - FB), v becomes min_distance * w / |w| if w . v > 0; otherwise the
+        junction is removed."""
         if not self.jids:
             return
         forces = self.junction_forces()
         doomed = []
         for r in range(len(self.jids)):
+            w = 0.5 * (forces[r, 0] - forces[r, 1])
+            size = float(np.linalg.norm(w))
             length = float(np.linalg.norm(self.jvec[r]))
-            if length < 1e-12:
-                continue                                 # direction undefined
-            u = self.jvec[r] / length
-            if (forces[r, 0] @ u < -self.breakage_threshold
-                    or forces[r, 1] @ u > self.breakage_threshold):
+            if length < 1e-12:                           # v has no direction: w alone decides
+                pressed = size > self.force_tolerance
+            else:
+                pressed = float(w @ self.jvec[r]) / length > self.force_tolerance
+            if pressed:
+                self.jvec[r] = self.min_distance * w / size
+            else:
                 doomed.append(self.jids[r])
         for jid in doomed:
             self.remove_junction(self.jids.index(jid))
@@ -1414,10 +1440,10 @@ class DummySimulation:
                            zip(I[ok_idx].tolist(), J[ok_idx].tolist(), sign[ok_idx].tolist())}
 
         candidates = []
-        for k in np.flatnonzero(inside & (dist < self.crossing_tolerance)):
+        for k in np.flatnonzero(inside & (dist < max(self.crossing_tolerance, self.min_distance))):
             prev = old.get((segs[I[k]], segs[J[k]]))
             flipped = prev is not None and prev * sign[k] < 0
-            if dist[k] < self.join_tolerance or flipped:
+            if dist[k] < self.min_distance or flipped:
                 candidates.append(k)
         candidates.sort(key=lambda k: dist[k])
 
@@ -1493,7 +1519,7 @@ class DummySimulation:
                 fixed[h] = True
         idx = np.arange(n)
         tie_sign = np.sign(idx[:, None] - idx[None, :]).astype(float)
-        d_min = self.min_distance
+        d_min = self.bead_distance
 
         for _ in range(iterations):
             diff = self.x[:, None, :] - self.x[None, :, :]
@@ -1537,7 +1563,7 @@ class DummySimulation:
                 nbr, kk, off = self._neighbors(lines)   # spring constants follow the contour lengths
                 ksum = kk.sum(axis=1)
                 fraction = (1.0 - np.exp(-self.spring_rate * ksum))[:, None]
-        self._release_junctions()
+        self._update_vectors()
         self._detect_crossings()
         self._update_proximity()
         return self.x
@@ -1614,7 +1640,8 @@ def main():
 
     # ---- simulation + viewer wiring ----
     sim = DummySimulation(points, moleculeids, center, volume_radius,
-                          bead_radius=sphere_radius)   # spring_rate, join_tolerance, ... tune here
+                          bead_radius=sphere_radius, min_distance=MIN_DISTANCE,
+                          proximity_distance=PROXIMITY_DISTANCE)   # spring_rate, min_distance, ... tune here
     # sim = LammpsSimulation("in.sim")
 
     def on_release(i, xyz):
