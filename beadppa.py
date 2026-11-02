@@ -56,6 +56,7 @@ Keyboard
 All files are written to the current folder; numbering continues after existing files.
 
 Command line
+    python beadppa.py --keyboard-layout fr     keyboard layout code (default: detected from the OS)
     python beadppa.py                          start with two new molecules
     python beadppa.py --load conf00000.dump    restore molecules, positions and
                                                volume radius from a dump file saved with 's'
@@ -76,7 +77,10 @@ Movies:   pip install imageio imageio-ffmpeg
 import argparse
 import colorsys
 import os
+import platform
 import re
+import shutil
+import subprocess
 import time
 
 import numpy as np
@@ -98,22 +102,148 @@ CAP_LIFT = 0.03         # patches sit this far outside the shell, to avoid z-fig
 MIN_VOLUME_RADIUS = 5.0
 VOLUME_RADIUS_STEP = 1.0
 
-# Shift + digit produces a layout-specific symbol; which key name VTK reports for it
-# depends on the keyboard layout (X11/Qt). Pick the layout matching your keyboard:
-# keys for Shift+1 ... Shift+9. (Where VTK reports the plain digit together with the
-# Shift modifier, e.g. on Windows, no table is needed.) Unknown shifted keys print a
-# hint with the key name, so you can add your own entry.
-KEYBOARD_LAYOUT = "nordic"
-SHIFTED_DIGIT_KEYSYMS = {
-    "us": ("exclam", "at", "numbersign", "dollar", "percent",
-           "asciicircum", "ampersand", "asterisk", "parenleft"),
-    "uk": ("exclam", "quotedbl", "sterling", "dollar", "percent",
-           "asciicircum", "ampersand", "asterisk", "parenleft"),
-    "de": ("exclam", "quotedbl", "section", "dollar", "percent",
-           "ampersand", "slash", "parenleft", "parenright"),
-    "nordic": ("exclam", "quotedbl", "numbersign", "currency", "percent",
-               "ampersand", "slash", "parenleft", "parenright"),
+# ---------------------------------------------------------------------------
+# Keyboard layouts
+#
+# Pressing a number-row key gives different key names (keysyms) on different keyboard
+# layouts, and which name VTK reports (X11, Qt, ...) depends on the layout:
+#   * on most layouts the number row gives the digits, and Shift gives a layout-specific
+#     symbol ("exclam" for Shift+1 on US, "quotedbl" for Shift+2 on Nordic, ...): "shifted"
+#   * on AZERTY (French) it is the other way round: the number row gives symbols
+#     ("ampersand", "eacute", ...) and Shift gives the digits: "plain"
+# Slots are stored with Shift + number-row key and recalled with the number-row key.
+#
+# Layouts are named by a platform-neutral code (the XKB / ISO style code that Linux uses):
+#   us gb de dk no se fi fr      ("nordic" = dk/no/se/fi, which share one table)
+# KEYBOARD_LAYOUT = "auto" finds the code out from the operating system (Linux, macOS,
+# Windows); the command line option --keyboard-layout and the environment variable
+# BEADPPA_KEYBOARD_LAYOUT override it. If detection fails, KEYBOARD_LAYOUT_FALLBACK is used.
+# ---------------------------------------------------------------------------
+KEYBOARD_LAYOUT = "auto"
+KEYBOARD_LAYOUT_FALLBACK = "nordic"
+LAYOUT_TABLES = {
+    "us": {"shifted": ("exclam", "at", "numbersign", "dollar", "percent",
+                       "asciicircum", "ampersand", "asterisk", "parenleft"), "plain": ()},
+    "gb": {"shifted": ("exclam", "quotedbl", "sterling", "dollar", "percent",
+                       "asciicircum", "ampersand", "asterisk", "parenleft"), "plain": ()},
+    "de": {"shifted": ("exclam", "quotedbl", "section", "dollar", "percent",
+                       "ampersand", "slash", "parenleft", "parenright"), "plain": ()},
+    "nordic": {"shifted": ("exclam", "quotedbl", "numbersign", "currency", "percent",
+                           "ampersand", "slash", "parenleft", "parenright"), "plain": ()},
+    # AZERTY: Shift + number row gives the digits themselves (handled like on any layout)
+    "fr": {"shifted": (), "plain": ("ampersand", "eacute", "quotedbl", "apostrophe",
+                                    "parenleft", "minus", "egrave", "underscore", "ccedilla")},
 }
+LAYOUT_CODES = {"us": "us", "gb": "gb", "uk": "gb", "de": "de", "fr": "fr", "nordic": "nordic",
+                "dk": "nordic", "no": "nordic", "se": "nordic", "fi": "nordic"}
+# macOS input source names ("com.apple.keylayout.Danish") and the like -> neutral code
+_LAYOUT_NAMES = (("danish", "dk"), ("norwegian", "no"), ("swedish", "se"), ("finnish", "fi"),
+                 ("german", "de"), ("french", "fr"), ("british", "gb"), ("unitedkingdom", "gb"),
+                 ("unitedstates", "us"), ("usextended", "us"), ("abc", "us"))
+# Windows language identifiers (low word of the keyboard layout handle) -> neutral code
+_WINDOWS_LANGIDS = {0x0409: "us", 0x0809: "gb", 0x0407: "de", 0x0406: "dk", 0x0414: "no",
+                    0x0814: "no", 0x041D: "se", 0x081D: "se", 0x040B: "fi", 0x040C: "fr"}
+
+
+def layout_code_from_text(text):
+    """Platform-neutral layout code (us, gb, de, dk, no, se, fi, fr, nordic) from text such
+    as an XKB layout ("dk", "us,dk", "dk(nodeadkeys)", "dk+nodeadkeys") or a macOS input
+    source id ("com.apple.keylayout.Danish"). None if the layout is not one we know."""
+    t = text.strip().lower().split(",")[0]            # first of several layouts
+    t = re.sub(r"\(.*?\)", "", t).split("+")[0]       # drop variants
+    t = t.split(".")[-1]                              # last part of "com.apple.keylayout.X"
+    t = re.sub(r"[^a-z]", "", t)
+    if t in LAYOUT_CODES:
+        return t
+    for name, code in _LAYOUT_NAMES:
+        if t.startswith(name):
+            return code
+    return None
+
+
+def _run(*command):
+    """Output of a command, or None if it is missing or fails."""
+    if shutil.which(command[0]) is None:
+        return None
+    try:
+        done = subprocess.run(command, capture_output=True, text=True, timeout=2)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout if done.returncode == 0 else None
+
+
+def _probe_linux():
+    def after(out, label):                           # "layout:  dk" -> "dk"
+        for line in (out or "").splitlines():
+            if line.strip().lower().startswith(label):
+                return line.split(":", 1)[1].strip()
+    def from_file(name, key):
+        try:
+            with open(name) as f:
+                for line in f:
+                    if line.strip().startswith(key + "="):
+                        return line.split("=", 1)[1].strip().strip('"\'')
+        except OSError:
+            pass
+    out = _run("gsettings", "get", "org.gnome.desktop.input-sources", "sources")
+    gnome = re.search(r"'xkb',\s*'([^']+)'", out or "")
+    yield "setxkbmap", after(_run("setxkbmap", "-query"), "layout")
+    yield "gsettings", gnome.group(1) if gnome else None
+    yield "localectl", after(_run("localectl", "status"), "x11 layout")
+    yield "/etc/default/keyboard", from_file("/etc/default/keyboard", "XKBLAYOUT")
+    yield "$XKB_DEFAULT_LAYOUT", os.environ.get("XKB_DEFAULT_LAYOUT")
+
+
+def _probe_macos():
+    out = _run("defaults", "read", "com.apple.HIToolbox", "AppleCurrentKeyboardLayoutInputSourceID")
+    yield "defaults read com.apple.HIToolbox", out.strip() if out else None
+
+
+def _probe_windows():
+    try:
+        import ctypes
+        langid = ctypes.windll.user32.GetKeyboardLayout(0) & 0xFFFF
+    except Exception:
+        return
+    yield "GetKeyboardLayout", _WINDOWS_LANGIDS.get(langid)
+
+
+def detect_keyboard_layout():
+    """Ask the operating system for the keyboard layout. Returns (neutral code, where it was
+    found) or (None, reason). Linux, macOS and Windows are supported; with several layouts
+    configured the first one is taken, because the OS reports the list, not the active one."""
+    system = platform.system()
+    probes = {"Linux": _probe_linux, "Darwin": _probe_macos, "Windows": _probe_windows}.get(system)
+    if probes is None:
+        return None, f"no detection for {system or 'this platform'}"
+    for source, text in probes():
+        code = layout_code_from_text(text) if text else None
+        if code is not None:
+            return code, source
+    return None, f"{system}: layout not found or not a supported layout"
+
+
+def resolve_keyboard_layout(setting=None):
+    """-> (name of the key table in LAYOUT_TABLES, description for the log). `setting` is the
+    value of --keyboard-layout; it wins over $BEADPPA_KEYBOARD_LAYOUT, which wins over
+    KEYBOARD_LAYOUT. "auto" means: ask the operating system."""
+    for value, origin in ((setting, "--keyboard-layout"),
+                          (os.environ.get("BEADPPA_KEYBOARD_LAYOUT"), "$BEADPPA_KEYBOARD_LAYOUT"),
+                          (KEYBOARD_LAYOUT, "KEYBOARD_LAYOUT")):
+        if value and value.strip():
+            break
+    value = (value or "auto").strip()
+    if value.lower() != "auto":
+        code = layout_code_from_text(value)
+        if code is None:
+            raise ValueError(f"Unknown keyboard layout '{value}' ({origin}); known layouts: "
+                             + ", ".join(sorted(LAYOUT_CODES)) + ", or auto")
+        return LAYOUT_CODES[code], f"{code} (set by {origin})"
+    code, source = detect_keyboard_layout()
+    if code is None:
+        fallback = layout_code_from_text(KEYBOARD_LAYOUT_FALLBACK) or "us"
+        return LAYOUT_CODES[fallback], f"{fallback} (fallback, {source})"
+    return LAYOUT_CODES[code], f"{code} (detected: {source})"
 
 
 HELP_TEXT = f"""\
@@ -142,7 +272,8 @@ Keyboard, any time
                                     {MIN_VOLUME_RADIUS:g}); one internal bead is removed / inserted next
                                     to both ends of every molecule
   Shift+1 ... Shift+9 ............. store the positions of all chain ends and the rotation and
-                                    zoom of the view in slot 1 ... 9 (layout: {KEYBOARD_LAYOUT})
+                                    zoom of the view in slot 1 ... 9 (keyboard layout: @LAYOUT@)
+                                    (number-row keys; on AZERTY the unshifted keys & é " ' ( - è _ ç)
   1 ... 9 ......................... slowly move all chain ends along great circles to the
                                     positions stored in that slot, while rotating and zooming
                                     the view to the stored state (touching the mouse takes
@@ -160,6 +291,11 @@ Keyboard, any time
 
 Files are written to the current folder; numbering continues after existing files.
 """
+
+
+def help_text(layout_description):
+    """HELP_TEXT with the keyboard layout that is in use filled in."""
+    return HELP_TEXT.replace("@LAYOUT@", layout_description)
 
 
 def color_for_id(moleculeid):
@@ -387,7 +523,7 @@ class SphereDragger:
 
     def __init__(self, plotter, template, actors, positions, moleculeids, surface_mask,
                  center, radius, sphere_radius, recall_speed=0.5, movie_fps=30, rng=None,
-                 show_internal=True, show_axes=True, axes=None,
+                 show_internal=True, show_axes=True, axes=None, keyboard_layout=None,
                  on_drag=None, on_release=None, on_insert=None, on_remove=None,
                  on_add_molecule=None, on_delete_molecule=None,
                  on_radius_change=None, on_ends_driven=None, on_ends_released=None):
@@ -434,6 +570,9 @@ class SphereDragger:
         self._movie_camera = None       # camera used for the movie frames while recording
         self._in_tick = False           # re-entrancy guard for tick()
         self.paused = False             # True: the simulation is not stepped
+        self.layout, self.layout_description = resolve_keyboard_layout(keyboard_layout)
+        self._layout_keys = LAYOUT_TABLES[self.layout]
+        print("Keyboard layout:", self.layout_description)
         self.show_internal = bool(show_internal)    # are the internal beads drawn?
         self.show_axes = bool(show_axes)            # is the coordinate system drawn?
         self.axes = axes                            # AxesGizmo (None: PyVista's axes widget)
@@ -1191,18 +1330,19 @@ class SphereDragger:
             self.on_release(i, self.positions[i].copy())
         self.plotter.render()
 
-    @staticmethod
-    def _digit_slot(key, shift):
-        """Map a key press to (slot 1..9, store?) or None. Handles the plain digit
-        (with the Shift modifier reported separately) and the layout-specific symbol
-        produced by Shift + digit."""
+    def _digit_slot(self, key, shift):
+        """Map a key press to (slot 1..9, store?) or None: Shift + number-row key stores, the
+        number-row key recalls. Handles the plain digit (with the Shift modifier reported
+        separately), the symbols that Shift + digit produces on the current keyboard layout,
+        and the symbols the unshifted number row produces on AZERTY."""
         if len(key) == 1 and key in "123456789":
             return int(key), shift
         if key.startswith("KP_") and len(key) == 4 and key[3] in "123456789":
             return int(key[3]), shift
-        symbols = SHIFTED_DIGIT_KEYSYMS.get(KEYBOARD_LAYOUT, ())
-        if key in symbols:
-            return symbols.index(key) + 1, True
+        if key in self._layout_keys["shifted"]:
+            return self._layout_keys["shifted"].index(key) + 1, True
+        if key in self._layout_keys["plain"]:
+            return self._layout_keys["plain"].index(key) + 1, False
         return None
 
     def _on_key(self, obj, event):
@@ -1217,7 +1357,7 @@ class SphereDragger:
             char = chr(char)
 
         if lower == "h" or key == "question" or char == "?":
-            print(HELP_TEXT)
+            print(help_text(self.layout_description))
         elif lower == "p":
             self._save_image()
         elif lower == "s":
@@ -1258,8 +1398,9 @@ class SphereDragger:
             else:
                 self._remove_bead()
         elif shift and key.islower() and len(key) > 1 and "_" not in key:
-            print(f"Shift+{key}: not recognised as a shifted digit for KEYBOARD_LAYOUT="
-                  f"'{KEYBOARD_LAYOUT}' (see SHIFTED_DIGIT_KEYSYMS at the top of the file)")
+            print(f"Shift+{key}: not recognised as a shifted digit for the keyboard layout "
+                  f"{self.layout_description}; use --keyboard-layout (us, gb, de, dk, no, se, fi, fr) "
+                  "or add the key name to LAYOUT_TABLES")
 
 
 # --------------------------------------------------------------------------
@@ -1604,11 +1745,16 @@ def main(argv=None):
     parser = argparse.ArgumentParser(
         description="Interactive viewer for bead-spring molecules in a spherical volume.",
         epilog="Mouse actions and key shortcuts (press h or ? in the window to print them again)\n"
-               "\n" + HELP_TEXT,
+               "\n" + help_text("detected automatically, see --keyboard-layout"),
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--load", metavar="DUMP_FILE",
                         help="restore molecules, positions and volume radius from a dump "
                              "file written with the 's' key")
+    parser.add_argument("--keyboard-layout", metavar="CODE", default=None,
+                        help="platform-neutral keyboard layout code (us, gb, de, dk, no, se, fi, fr; "
+                             "nordic = dk/no/se/fi) used to recognise Shift+1..9 and the number "
+                             "row; default: auto = ask the operating system (Linux, macOS, Windows), "
+                             "overridable with $BEADPPA_KEYBOARD_LAYOUT")
     args = parser.parse_args(argv)
 
     print("Press h or ? in the window for all key shortcuts and mouse actions.")
@@ -1652,7 +1798,7 @@ def main(argv=None):
 
     dragger = SphereDragger(
         plotter, template, actors, points, moleculeids, surface_mask, center, volume_radius,
-        sphere_radius=sphere_radius, rng=rng, axes=axes,
+        sphere_radius=sphere_radius, rng=rng, axes=axes, keyboard_layout=args.keyboard_layout,
         on_drag=sim.set_surface_position,
         on_release=on_release,
         on_insert=sim.insert_bead,

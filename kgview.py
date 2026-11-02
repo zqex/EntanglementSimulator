@@ -6,9 +6,11 @@ Every molecule is   start bead - internal beads - end bead.  Beads are spheres c
 molecule; lines of the same color connect consecutive beads along each chain.
 
 Only the beads within a distance `volume_radius` from a center position (xc, yc, zc) are
-shown (the translucent shell marks this spherical volume), and only of those molecules that
-have more than `min_length` beads inside it; all other beads are kept in memory but are
-not drawn. A chain line is drawn only when both of its
+shown (the translucent shell marks this volume: a sphere to begin with; v / V switch to a cube
+or a thin slab, see below), and only those parts of molecules
+that have at least `min_length` beads in a row inside it. A molecule may cross the sphere in
+many segments (maximal runs of consecutive beads inside); a segment is shown only if it has at
+least `min_length` beads. All other beads are kept in memory but are not drawn. A chain line is drawn only when both of its
 beads are shown (and the bond is not longer than MAX_BOND_LENGTH). Chain ends that lie on the
 surface of the volume are "attached" to it; these are the chain ends that Shift+1..9 / 1..9
 store and recall.
@@ -29,9 +31,9 @@ Keyboard
 - w  -> decrease the display scale of the beads (sphere_scale) by 10%; W -> increase it by 10%.
         The scale only changes how large the beads are drawn, not the bead
         radius used by r / R and the simulation. It starts at 0.5 (--scale changes that).
-- l  -> increase min_length by one; L -> decrease it by one (not below 1). Only molecules with
-        MORE than min_length beads inside the volume are shown (default 1, i.e. molecules with
-        at least two beads inside; --min-length changes the start value).
+- l  -> increase min_length by one; L -> decrease it by one (not below 1). Only segments of
+        molecules with at least min_length beads inside the volume are shown (default 1, i.e.
+        every bead inside; --min-length changes the start value).
 - d  -> switch depth cueing on; D -> switch it off. With depth cueing the beads and
         chain lines fade toward the white background with their depth in the volume: the
         front of the sphere keeps its color, the back is paler. (--depth-cueing starts with
@@ -47,6 +49,9 @@ Keyboard
 - Shift + 1..9 -> store the current positions of all surface-attached chain ends, the
                   rotation and zoom of the view, and the center and the radius of the
                   volume, in slot 1..9
+                  (1..9 are the nine keys of the number row, whatever characters they type:
+                  Shift + the key stores, the key alone recalls. On the French layout (--keyboard-layout
+                  fr) these are the keys typing & é " ' ( - è _ ç, and the digits they type with Shift.)
 - 1..9         -> slowly move all chain ends stored in that slot to their stored positions,
                   each along a great circle of the sphere, while the center and the radius
                   of the volume move to their stored values (a translation: the camera
@@ -54,23 +59,37 @@ Keyboard
                   (touching the mouse takes the view back). While a movie is being recorded
                   the motion advances by exactly one movie frame per picture, however slow
                   the drawing is, so the movie plays at the intended speed.
+- v  -> switch the shape of the shown volume, around the same center: sphere (radius
+        volume_radius) -> cube (side length 2*volume_radius) -> thin slab (two long sides of
+        length 2*volume_radius, the thin side 0.5*volume_radius, along the z axis) -> sphere.
+        V -> the same in the opposite order. The cube and the slab are aligned with the
+        coordinate axes. Chain ends are attached to the surface (and stored / recalled by
+        Shift+1..9 / 1..9) only while the volume is a sphere.
 - c  -> show the coordinate system (axes widget); C -> hide it
 - B  -> hide the internal beads (chain lines and chain ends stay visible); b -> show them again
 - m  -> start recording a movie (movie00000.avi, movie00001.avi, ...); M -> stop recording.
         The movie keeps the view the camera had when recording started: rotating, zooming or
         panning the view yourself does NOT show up in the movie, but a view recalled with
         1..9 does (the movie view then moves from where it was to the stored view).
+- h or ?  -> print a summary of the mouse and key shortcuts in the terminal
 - p  -> save a PNG of the current view (img00000.png, img00001.png, ...)
-- s  -> save the beads that are shown, i.e. those inside the volume that belong to molecules
-        with more than min_length beads inside (the other beads are not written), to
-        conf00000.dump, conf00001.dump, ... in a LAMMPS-dump-like format:
-        # <number of beads> <number of molecules>
+- s  -> save the beads that are shown, i.e. those inside the volume that belong to segments
+        with at least min_length beads (the other beads are not written), to conf00000.dump,
+        conf00001.dump, ... in a LAMMPS-dump-like format:
+        # <number of beads> <number of segments>
         ITEM: NUMBER OF ATOMS / <number of beads>
         ITEM: BOX BOUNDS pp pp pp / xmin xmax / ymin ymax / zmin zmax  (extent of the beads)
-        ITEM: ATOMS id mol type xu yu zu / one line per bead
+        ITEM: ATOMS id mol type xu yu zu / one line per bead, ending in a comment
+          <id> <mol> <type> <x> <y> <z> # <original_bead_id> <original_molecule_number> <index_on_molecule>
         # volume_radius <radius>   (last lines; extra information is always prefixed with '#')
         # center <xc> <yc> <zc>
-        (ids and molecule numbers start at 1; type 1 = chain end, 2 = internal bead)
+        # shape <sphere|cube|slab>
+        Every segment is saved as one molecule (numbered 1..S, ids start at 1). Type 2 = surface
+        bead: the preceding or the following bead of the original molecule is outside the sphere;
+        type 1 = internal bead: all its neighbours along the molecule are inside (a chain end
+        has only one neighbour). original_bead_id and original_molecule_number are the id and
+        molecule number in the input file; index_on_molecule counts the beads along the original
+        molecule from 1 (the first bead of the molecule).
 All files are written to the current folder; numbering continues after existing files.
 
 Command line
@@ -83,9 +102,11 @@ Command line
     --center         center (xc, yc, zc) of the shown volume (default 0 0 0)
     --scale          display scale of the beads, i.e. the drawn bead radius is this factor times
                      the bead radius (default 0.5; w / W change it while running)
-    --min-length     show only molecules with more than this many beads inside the volume
-                     (default 1; l / L change it while running)
+    --min-length     show only segments of molecules with at least this many beads inside the
+                     volume (default 1; l / L change it while running)
     --depth-cueing   start with depth cueing switched on ('d' / 'D' switch it on / off)
+    --keyboard-layout  layout of your keyboard, for the slot keys Shift+1..9 / 1..9: us, uk, de,
+                     nordic or fr (default nordic); see KEYBOARD_LAYOUTS to add your own
     --nowrap         do not wrap coordinates into the bounding box of the dump header
                      (the 6 numbers after "ITEM: BOX BOUNDS pp pp pp"); by default beads
                      outside it are wrapped back in (periodic boundary conditions)
@@ -122,7 +143,7 @@ AXES_VIEWPORT = (0.0, 0.0, AXES_SIZE, AXES_SIZE)
 INITIAL_ZOOM = 1.6      # the first view shows everything this many times larger than "fit to window"
 AXES_LABEL_REFERENCE_SIZE = 0.4   # widget size at which the X/Y/Z labels have the size we keep
 
-MIN_LENGTH = 1          # default: show only molecules with more than this many beads inside
+MIN_LENGTH = 1          # default: show only segments with at least this many beads inside
 # Level of detail of the spheres: with very many beads the finest sphere would hand the GPU
 # billions of triangles (this crashed the graphics driver with 4 million beads), so the sphere
 # template gets coarser until (beads x triangles per bead) fits into this budget.
@@ -136,6 +157,9 @@ CENTER_STEP_FRACTION = 0.10     # an arrow key shifts the center by this fractio
 AUTOFOCUS_BEADS = 10000         # initial volume radius: just enough to show this many beads
 MAX_BOND_LENGTH = 2.0   # bonds (chain lines) longer than this are not drawn
 
+SHAPES = ("sphere", "cube", "slab")     # v / V cycle through these shapes of the shown volume
+SLAB_THICKNESS = 0.5    # slab: thin side = this times the volume radius (long sides 2 * radius)
+
 MIN_VOLUME_RADIUS = 5.0
 VOLUME_SCALE_STEP = 0.10    # r / R change the volume radius by this fraction, the bead radius oppositely
 
@@ -143,21 +167,31 @@ VOLUME_SCALE_STEP = 0.10    # r / R change the volume radius by this fraction, t
 WINDOW_TOLERANCE = 1e-6     # a bead exactly on the surface still counts as inside
 SURFACE_TOLERANCE = 1e-3    # a chain end this close to the surface counts as attached to it
 
-# Shift + digit produces a layout-specific symbol; which key name VTK reports for it
-# depends on the keyboard layout (X11/Qt). Pick the layout matching your keyboard:
-# keys for Shift+1 ... Shift+9. (Where VTK reports the plain digit together with the
-# Shift modifier, e.g. on Windows, no table is needed.) Unknown shifted keys print a
-# hint with the key name, so you can add your own entry.
+# Keyboard layouts. The slot keys 1..9 are the nine keys of the number row, and which
+# CHARACTER such a key types depends on the layout (and on Shift). The viewer works with the
+# typed character, which VTK reports on every platform, so a layout is just a table: for each
+# layout the characters typed WITHOUT Shift and WITH Shift by the keys of slots 1..9.
+# Pressing the key recalls slot n, Shift + the key stores slot n. The French AZERTY layout
+# types the symbols without Shift and the digits with Shift. Add your own layout here, or
+# select one with --keyboard-layout (default: KEYBOARD_LAYOUT).
+KEYBOARD_LAYOUTS = {
+    #           unshifted          shifted
+    "us":     ("123456789", "!@#$%^&*("),
+    "uk":     ("123456789", '!"\u00a3$%^&*('),
+    "de":     ("123456789", '!"\u00a7$%&/()'),
+    "nordic": ("123456789", '!"#\u00a4%&/()'),
+    "fr":     ('&\u00e9"\'(-\u00e8_\u00e7', "123456789"),
+}
 KEYBOARD_LAYOUT = "nordic"
-SHIFTED_DIGIT_KEYSYMS = {
-    "us": ("exclam", "at", "numbersign", "dollar", "percent",
-           "asciicircum", "ampersand", "asterisk", "parenleft"),
-    "uk": ("exclam", "quotedbl", "sterling", "dollar", "percent",
-           "asciicircum", "ampersand", "asterisk", "parenleft"),
-    "de": ("exclam", "quotedbl", "section", "dollar", "percent",
-           "ampersand", "slash", "parenleft", "parenright"),
-    "nordic": ("exclam", "quotedbl", "numbersign", "currency", "percent",
-               "ampersand", "slash", "parenleft", "parenright"),
+
+# X11-style key names that VTK may report instead of a character (some platforms report a
+# key name for symbols and leave the typed character empty); used as a fallback.
+KEYSYM_TO_CHAR = {
+    "exclam": "!", "at": "@", "numbersign": "#", "dollar": "$", "percent": "%",
+    "asciicircum": "^", "ampersand": "&", "asterisk": "*", "parenleft": "(", "parenright": ")",
+    "quotedbl": '"', "apostrophe": "'", "quoteright": "'", "minus": "-", "underscore": "_",
+    "slash": "/", "sterling": "\u00a3", "section": "\u00a7", "currency": "\u00a4",
+    "eacute": "\u00e9", "egrave": "\u00e8", "ccedilla": "\u00e7", "agrave": "\u00e0",
 }
 
 
@@ -195,6 +229,25 @@ def chain_ends(moleculeids):
         first[1:] = change
         last[:-1] = change
     return first, last
+
+
+def segment_ids(inside, first):
+    """Segments = maximal runs of consecutive beads of ONE molecule that are inside the
+    sphere. `inside` (n,) bool, `first` (n,) bool marks the first bead of every molecule.
+    Returns (segment number of every bead (meaningful where inside), number of segments)."""
+    prev_inside = np.zeros(len(inside), dtype=bool)
+    prev_inside[1:] = inside[:-1] & ~first[1:]
+    start = inside & ~prev_inside
+    return np.cumsum(start) - 1, int(start.sum())
+
+
+def shown_mask(inside, first, min_length):
+    """Beads inside the sphere that belong to a segment with at least `min_length` beads."""
+    if min_length <= 1 or not inside.any():
+        return inside
+    seg, n_seg = segment_ids(inside, first)
+    lengths = np.bincount(seg[inside], minlength=n_seg)
+    return inside & (lengths[np.maximum(seg, 0)] >= min_length)
 
 
 def set_initial_view(plotter, zoom=INITIAL_ZOOM):
@@ -279,7 +332,7 @@ def _locate(sorted_indices, wanted):
 
 
 class SphereDragger:
-    """Shows the beads inside a spherical volume (of the molecules with enough beads inside),
+    """Shows the beads inside a spherical volume (in segments with enough beads),
     lets the user shift the volume, resize it, store/recall chain-end configurations together
     with the view and the volume, and save images / movies / bead positions; lets a
     simulation push new positions for all beads.
@@ -293,12 +346,13 @@ class SphereDragger:
     MOVIE_PATTERN = re.compile(r"^movie(\d{5})\.avi$")
     # characters whose built-in VTK meaning (reset camera, surface mode, pick, ...) is suppressed
     # ('a'/'A' have no function here any more, but VTK's own 'a' = actor mode stays disabled)
-    OWN_CHARS = frozenset("aAbBcCdDeElLpPsSmMrRwW123456789")
+    OWN_CHARS = frozenset("aAbBcCdDeEhHlLpPsSmMrRvVwW123456789")
 
     def __init__(self, plotter, template, positions, moleculeids, surface_mask,
                  center, radius, sphere_radius, recall_speed=0.5, movie_fps=30,
                  show_internal=True, show_axes=True, paused=True, sphere_scale=SPHERE_SCALE,
                  min_length=MIN_LENGTH, depth_cueing=False,
+                 original_ids=None, original_molecules=None, keyboard_layout=KEYBOARD_LAYOUT,
                  on_radius_change=None, on_center_change=None,
                  on_ends_driven=None, on_ends_released=None):
         self.plotter = plotter
@@ -307,15 +361,25 @@ class SphereDragger:
         self.positions = np.array(positions, dtype=float).reshape(-1, 3)   # (n, 3), ALL beads
         self.moleculeids = np.array(moleculeids, dtype=np.uint32)
         self.surface_mask = np.array(surface_mask, dtype=bool)   # chain ends attached to the surface
+        n_beads = len(self.positions)
+        # id / molecule number of every bead in the input file (written by 's')
+        self.original_ids = (np.arange(1, n_beads + 1) if original_ids is None
+                             else np.asarray(original_ids, dtype=np.int64))
+        self.original_molecules = (self.moleculeids.astype(np.int64) + 1 if original_molecules is None
+                                   else np.asarray(original_molecules, dtype=np.int64))
         self.center = np.asarray(center, dtype=float)
         self.radius = float(radius)             # radius of the spherical volume
         self.sphere_radius = float(sphere_radius)   # radius of one bead
+        if keyboard_layout not in KEYBOARD_LAYOUTS:
+            raise ValueError(f"unknown keyboard layout '{keyboard_layout}'; "
+                             f"choose one of {', '.join(KEYBOARD_LAYOUTS)}")
+        self.keyboard_layout = keyboard_layout
         self.depth_cueing = bool(depth_cueing)      # fade distant beads / bonds toward the background
         self._cue_dirty = True
         self._cue_key = None            # viewing direction the colors were last computed for
         self._sphere_base = None        # undimmed uint8 colors of the shown spheres
         self._bond_base = None          # undimmed uint8 colors of the drawn bonds
-        self.min_length = max(1, int(min_length))   # molecules need MORE beads than this inside
+        self.min_length = max(1, int(min_length))   # a segment needs at least this many beads
         self.sphere_scale = float(sphere_scale)     # drawn bead radius = sphere_scale * sphere_radius
         self.recall_speed = float(recall_speed)     # rad/s along great circles
         self.movie_fps = movie_fps
@@ -349,6 +413,7 @@ class SphereDragger:
         self._vis = np.zeros(0, dtype=np.intp)      # indices of the beads inside the volume
         self._shown = np.zeros(0, dtype=np.intp)    # indices of the beads drawn as spheres
         self._bond_seg = np.zeros(0, dtype=np.intp) # drawn bonds: segment a joins beads a, a+1
+        self.shape = "sphere"           # shape of the shown volume, one of SHAPES
         self._update_structure()
 
         # Translucent shell showing the volume (unit sphere, scaled to the current radius).
@@ -356,8 +421,12 @@ class SphereDragger:
             pv.Sphere(radius=1.0, theta_resolution=64, phi_resolution=64),
             color="lightgray", opacity=0.12, smooth_shading=True)
         self.shell.SetPickable(False)
-        self.shell.SetPosition(*self.center)
-        self.shell.SetScale(self.radius, self.radius, self.radius)
+        # the same for the cube and the slab (a unit cube, stretched to the shape)
+        self.box_shell = plotter.add_mesh(
+            pv.Cube(x_length=2.0, y_length=2.0, z_length=2.0),
+            color="lightgray", opacity=0.12)
+        self.box_shell.SetPickable(False)
+        self._update_shell()
 
         # All spheres are drawn by ONE actor: a glyph mapper instancing the template at every
         # point of a point cloud, colored per point (uint8 RGB point data "rgb").
@@ -380,7 +449,7 @@ class SphereDragger:
 
         # Make sure PyVista's own key shortcuts for the keys we use don't also fire.
         for key in ("Up", "Down", "Left", "Right", "a", "b", "B", "c", "C", "d", "D", "p", "s",
-                    "S", "m", "M", "r", "R", "w", "W", "l", "L", "e", "E", *"123456789"):
+                    "S", "m", "M", "r", "R", "w", "W", "l", "L", "e", "E", "h", "v", "V", *"123456789"):
             try:
                 plotter.clear_events_for_key(key)
             except Exception:
@@ -460,15 +529,39 @@ class SphereDragger:
         return np.flatnonzero(self.first_mask), np.flatnonzero(self.last_mask)
 
     # ------------------------------------------------------ scene (rendering)
+    def _update_shell(self):
+        """Position, size and shape of the translucent shell marking the volume."""
+        sphere = self.shape == "sphere"
+        self.shell.SetVisibility(sphere)
+        self.box_shell.SetVisibility(not sphere)
+        r = self.radius
+        z = r * (0.5 * SLAB_THICKNESS if self.shape == "slab" else 1.0)
+        self.shell.SetPosition(*self.center)
+        self.box_shell.SetPosition(*self.center)
+        self.shell.SetScale(r, r, r)
+        self.box_shell.SetScale(r, r, z)
+
+    def _cycle_shape(self, step):
+        """v (step=+1) / V (step=-1): sphere -> cube -> slab -> sphere, or backwards."""
+        self._cancel_animation()
+        self.shape = SHAPES[(SHAPES.index(self.shape) + step) % len(SHAPES)]
+        self._update_shell()
+        self._attach_ends()             # (surface attachment only exists for the sphere)
+        print(f"Shape of the volume: {self.shape}; showing {len(self._vis)} beads")
+        self.plotter.render()
+
     def _visible_mask(self):
-        """Beads within `radius` of `center`, of molecules with more than `min_length` such beads."""
+        """Beads inside the volume (sphere, cube or slab around `center`, see `shape`) that belong
+        to a segment (a run of consecutive beads of one molecule inside) with at least
+        `min_length` beads."""
         v = self.positions - self.center
         limit = self.radius * (1.0 + WINDOW_TOLERANCE) + 1e-9
-        inside = np.einsum("ij,ij->i", v, v) <= limit * limit
-        if len(inside) == 0:
-            return inside
-        counts = np.bincount(self.mol_index[inside], minlength=int(self.mol_index[-1]) + 1)
-        return inside & (counts > self.min_length)[self.mol_index]
+        if self.shape == "sphere":
+            inside = np.einsum("ij,ij->i", v, v) <= limit * limit
+        else:                           # half side lengths: radius (cube), thin side/2 (slab)
+            half = limit * np.array([1.0, 1.0, 0.5 * SLAB_THICKNESS if self.shape == "slab" else 1.0])
+            inside = np.all(np.abs(v) <= half, axis=1)
+        return shown_mask(inside, self.first_mask, self.min_length)
 
     def _rebuild_scene(self, mask=None):
         """Needed when the shown set of beads, the number of beads or the radius changed."""
@@ -669,7 +762,7 @@ class SphereDragger:
 
     # ------------------------------------------------------------ volume radius
     def _change_min_length(self, delta):
-        """l / L: change the number of beads a molecule needs inside the volume to be shown."""
+        """l / L: change the number of beads a segment needs inside the volume to be shown."""
         new = self.min_length + delta
         if new < 1:
             print("min_length is already 1.")
@@ -703,7 +796,7 @@ class SphereDragger:
         self._cancel_animation()
         self.radius = new
         self.sphere_radius *= bead_factor
-        self.shell.SetScale(new, new, new)
+        self._update_shell()
         self._update_bead_size()
 
         # keep the apparent size of the volume: scale the cameras about its center
@@ -729,9 +822,12 @@ class SphereDragger:
     def _attach_ends(self):
         """The center or the radius of the volume changed: the chain ends that lie on the surface
         of the volume around the new center are attached to it. Rebuilds the scene."""
-        dist = np.linalg.norm(self.positions - self.center, axis=1)
-        self.surface_mask = self.end_mask & (
-            np.abs(dist - self.radius) <= SURFACE_TOLERANCE * self.radius)
+        if self.shape == "sphere":
+            dist = np.linalg.norm(self.positions - self.center, axis=1)
+            self.surface_mask = self.end_mask & (
+                np.abs(dist - self.radius) <= SURFACE_TOLERANCE * self.radius)
+        else:
+            self.surface_mask = np.zeros(len(self.positions), dtype=bool)
         if self.on_center_change is not None:
             self.on_center_change(self.center.copy(), self.surface_mask.copy())
         self._rebuild_scene()
@@ -749,7 +845,7 @@ class SphereDragger:
         delta = CENTER_STEP_FRACTION * self.radius * direction
         self._cancel_animation()
         self.center = self.center + delta
-        self.shell.SetPosition(*self.center)
+        self._update_shell()
         for cam in (self.renderer.GetActiveCamera(), self._movie_camera):
             if cam is not None:
                 cam.SetPosition(*(np.array(cam.GetPosition()) + delta))
@@ -841,7 +937,7 @@ class SphereDragger:
         c0, R0 = self.center.copy(), self.radius
         c1, R1 = np.asarray(stored["center"], dtype=float), float(stored["radius"])
 
-        keys = self._end_keys(attached_only=False)
+        keys = self._end_keys(attached_only=False) if self.shape == "sphere" else {}
         common = [k for k in keys if k in target]
         idx = np.array([keys[k] for k in common], dtype=np.intp)
         p0 = self.positions[idx]
@@ -912,8 +1008,7 @@ class SphereDragger:
         if a["moves_volume"]:
             self.center = a["c0"] + f * (a["c1"] - a["c0"])
             self.radius = a["R0"] + f * (a["R1"] - a["R0"])
-            self.shell.SetPosition(*self.center)
-            self.shell.SetScale(self.radius, self.radius, self.radius)
+            self._update_shell()
             if self.on_radius_change is not None:
                 self.on_radius_change(self.radius, self.sphere_radius)
             if self.on_center_change is not None:
@@ -988,10 +1083,10 @@ class SphereDragger:
 
     def _save_configuration(self):
         """Write confXXXXX.dump (LAMMPS-dump-like text) with the beads that are shown (inside
-        the volume, of molecules with more than min_length beads inside; the internal beads are
-        written also while they are hidden with B):
+        the volume, in segments with at least min_length beads; the internal beads are written
+        also while they are hidden with B):
 
-            # n_beads n_molecules
+            # n_beads n_segments
             ITEM: NUMBER OF ATOMS
             n_beads
             ITEM: BOX BOUNDS pp pp pp
@@ -999,13 +1094,17 @@ class SphereDragger:
             ymin ymax
             zmin zmax
             ITEM: ATOMS id mol type xu yu zu
-            id molecule beadtype x y z          (one line per bead)
+            id segment beadtype x y z # original_bead_id original_molecule_number index_on_molecule
             # volume_radius radius              (extra information, always prefixed with '#')
             # center xc yc zc
+            # shape sphere | cube | slab         (volume_radius: sphere radius / half side length)
 
-        Ids and molecule numbers start at 1 (molecules are renumbered 1..M in file order);
-        beadtype is 1 for chain ends and 2 for the other beads; the box bounds are the
-        smallest and largest bead coordinates."""
+        Ids and segment numbers start at 1 (every segment of a molecule is saved as a molecule
+        of its own). beadtype is 2 for a surface bead (the preceding or the following bead of
+        the original molecule is outside the sphere) and 1 for an internal bead (every
+        neighbour along the molecule is inside; a chain end has just one neighbour).
+        index_on_molecule is the position along the original molecule, the first bead being 1.
+        The box bounds are the smallest and largest bead coordinates."""
         sel = self._vis                                 # sorted indices of the shown beads
         n = len(sel)
         if n == 0:
@@ -1014,21 +1113,35 @@ class SphereDragger:
         path = os.path.join(os.getcwd(), f"conf{self.conf_counter:05d}.dump")
         pos = self.positions[sel]
         lo, hi = pos.min(axis=0), pos.max(axis=0)
-        mol_no = np.unique(self.mol_index[sel], return_inverse=True)[1].ravel() + 1
-        table = np.column_stack([np.arange(1, n + 1), mol_no,
-                                 np.where(self.end_mask[sel], 1, 2), pos])
+
+        inside, first = self._vis_mask, self.first_mask  # (a neighbour of a shown bead is inside
+        previous_outside = np.zeros(len(inside), dtype=bool)     # exactly when it is shown)
+        previous_outside[1:] = ~inside[:-1] & ~first[1:]         # a preceding bead exists and is outside
+        next_outside = np.zeros(len(inside), dtype=bool)
+        next_outside[:-1] = ~inside[1:] & ~first[1:]             # a following bead exists and is outside
+        beadtype = np.where((previous_outside | next_outside)[sel], 2, 1)
+
+        segment, _ = segment_ids(inside, first)
+        segment_no = np.unique(segment[sel], return_inverse=True)[1].ravel() + 1
+        index_on_molecule = np.arange(len(inside)) - np.flatnonzero(first)[self.mol_index] + 1
+
+        table = np.column_stack([np.arange(1, n + 1), segment_no, beadtype, pos,
+                                 self.original_ids[sel], self.original_molecules[sel],
+                                 index_on_molecule[sel]])
         with open(path, "w") as f:
-            f.write(f"# {n} {int(mol_no.max())}\n")
+            f.write(f"# {n} {int(segment_no.max())}\n")
             f.write("ITEM: NUMBER OF ATOMS\n")
             f.write(f"{n}\n")
             f.write("ITEM: BOX BOUNDS pp pp pp\n")
             for k in range(3):
                 f.write(f"{lo[k]:.6f} {hi[k]:.6f}\n")
             f.write("ITEM: ATOMS id mol type xu yu zu\n")
-            np.savetxt(f, table, fmt=["%d", "%d", "%d", "%.6f", "%.6f", "%.6f"])
+            np.savetxt(f, table, fmt=["%d", "%d", "%d", "%.6f", "%.6f", "%.6f",
+                                      "# %d", "%d", "%d"])
             f.write(f"# volume_radius {self.radius:.6f}\n")
             f.write(f"# center {self.center[0]:.6f} {self.center[1]:.6f} {self.center[2]:.6f}\n")
-        print("Saved", path, f"({n} beads)")
+            f.write(f"# shape {self.shape}\n")
+        print("Saved", path, f"({n} beads, {int(segment_no.max())} segments)")
         self.conf_counter += 1
 
     def _start_movie(self):
@@ -1119,18 +1232,20 @@ class SphereDragger:
             except TypeError:
                 self.interactor.SetKeyCode(" ")
 
-    @staticmethod
-    def _digit_slot(key, shift):
-        """Map a key press to (slot 1..9, store?) or None. Handles the plain digit
-        (with the Shift modifier reported separately) and the layout-specific symbol
-        produced by Shift + digit."""
-        if len(key) == 1 and key in "123456789":
-            return int(key), shift
+    def _digit_slot(self, key, shift, char):
+        """Map a key press to (slot 1..9, store?) or None. `key` is VTK's key name, `shift` the
+        state of the Shift key and `char` the typed character ('' if none). The typed
+        character is looked up in the table of the keyboard layout; where the platform
+        reports only a key name, it is translated to a character first, and where it reports
+        a plain digit together with the Shift modifier, that counts as Shift + the key."""
         if key.startswith("KP_") and len(key) == 4 and key[3] in "123456789":
-            return int(key[3]), shift
-        symbols = SHIFTED_DIGIT_KEYSYMS.get(KEYBOARD_LAYOUT, ())
-        if key in symbols:
-            return symbols.index(key) + 1, True
+            return int(key[3]), shift                       # numeric keypad: layout independent
+        unshifted, shifted = KEYBOARD_LAYOUTS[self.keyboard_layout]
+        ch = char or KEYSYM_TO_CHAR.get(key) or (key if len(key) == 1 else "")
+        if ch and ch in shifted:
+            return shifted.index(ch) + 1, True
+        if ch and ch in unshifted:
+            return unshifted.index(ch) + 1, shift
         return None
 
     def _on_key(self, obj, event):
@@ -1139,9 +1254,20 @@ class SphereDragger:
         if len(key) == 1 and key.isalpha() and shift:
             key = key.upper()
         lower = key.lower()
-        digit = self._digit_slot(key, shift)
+        code = self.interactor.GetKeyCode()
+        if isinstance(code, int):
+            code = chr(code)
+        if not code or not code.isprintable() or code.isspace():
+            code = ""                                       # no typed character reported
+        digit = self._digit_slot(key, shift, code)
 
-        if lower == "p":
+        if key in ("question", "?", "h") or code in ("?", "h"):
+            print("\n" + _controls_text() + "\n")
+        elif key == "v":
+            self._cycle_shape(+1)
+        elif key == "V":
+            self._cycle_shape(-1)
+        elif lower == "p":
             self._save_image()
         elif lower == "s":
             self._save_configuration()
@@ -1186,8 +1312,9 @@ class SphereDragger:
         elif lower in ("up", "down", "left", "right"):
             self._pan_center(lower, depth=shift and lower in ("up", "down"))
         elif shift and key.islower() and len(key) > 1 and "_" not in key:
-            print(f"Shift+{key}: not recognised as a shifted digit for KEYBOARD_LAYOUT="
-                  f"'{KEYBOARD_LAYOUT}' (see SHIFTED_DIGIT_KEYSYMS at the top of the file)")
+            print(f"Shift+{key} (character {code!r}) is not a slot key for the keyboard layout "
+                  f"'{self.keyboard_layout}': use --keyboard-layout "
+                  f"({', '.join(KEYBOARD_LAYOUTS)}) or add your layout to KEYBOARD_LAYOUTS")
 
 
 # --------------------------------------------------------------------------
@@ -1219,7 +1346,9 @@ def load_dump(path, center=(0.0, 0.0, 0.0), wrap=True):
     Written for millions of beads: only the needed columns are parsed (numpy's C parser), and
     everything after that is vectorised.
 
-    Returns positions (n, 3), moleculeids (n,) uint32, end_mask (n,) bool, volume_radius.
+    The bead type column is not used. Returns positions (n, 3), moleculeids (n,) uint32,
+    end_mask (n,) bool, volume_radius, and the bead ids and molecule numbers of the file in the
+    same order as the beads.
     Beads are ordered molecule by molecule (by id within a molecule); the first and last
     bead of every molecule are its chain ends. If the file has no volume radius, the
     distance of the farthest chain end from `center` is used.
@@ -1278,8 +1407,6 @@ def load_dump(path, center=(0.0, 0.0, 0.0), wrap=True):
 
     wanted = [column("id"), column("mol"),
               column("xu", "x"), column("yu", "y"), column("zu", "z")]
-    if "type" in columns:
-        wanted.append(columns.index("type"))
     with _open_text(path) as f:
         table = np.loadtxt(f, skiprows=lines_read, max_rows=n_atoms, usecols=wanted, ndmin=2)
     if len(table) != n_atoms:
@@ -1307,37 +1434,29 @@ def load_dump(path, center=(0.0, 0.0, 0.0), wrap=True):
     rank_of = np.empty(len(uniq), dtype=np.int64)
     rank_of[np.argsort(first_pos)] = np.arange(len(uniq))
     order = order[np.argsort(rank_of[inverse], kind="stable")]
-    xyz, mol = xyz[order], mol[order]
+    xyz, mol, ids = xyz[order], mol[order], ids[order]
 
     first, last = chain_ends(mol)
     if np.any(first & last):
         bad = mol[np.flatnonzero(first & last)[0]]
         raise ValueError(f"{path}: molecule {bad} has fewer than two beads")
     end_mask = first | last
-    if "type" in columns:
-        bead_type = table[order, -1].astype(int)
-        if not np.array_equal(bead_type == 1, end_mask):
-            print(f"Warning: bead types in {path} don't match the chain ends "
-                  "(first and last bead of each molecule); using the molecule structure.")
-
     if volume_radius is None:
         volume_radius = float(np.linalg.norm(xyz[end_mask] - center, axis=1).max())
-    return np.ascontiguousarray(xyz), (mol - mol.min()).astype(np.uint32), end_mask, volume_radius
+    return (np.ascontiguousarray(xyz), (mol - mol.min()).astype(np.uint32), end_mask,
+            volume_radius, ids, mol)
 
 
 def focus_radius(points, moleculeids, center, min_length, target=AUTOFOCUS_BEADS):
     """Smallest volume radius around `center` for which at least `target` beads are shown
-    (inside the volume, in molecules with more than `min_length` beads inside), found by
+    (inside the volume, in segments with at least `min_length` beads), found by
     bisection; None if even the largest possible volume shows fewer. Returns (radius, shown)."""
     first, _ = chain_ends(moleculeids)
-    mol_index = np.cumsum(first) - 1
-    n_mol = int(mol_index[-1]) + 1
     d = np.linalg.norm(points - center, axis=1)
 
     def shown(radius):
         inside = d <= radius * (1.0 + WINDOW_TOLERANCE) + 1e-9
-        counts = np.bincount(mol_index[inside], minlength=n_mol)
-        return int(np.count_nonzero(inside & (counts > min_length)[mol_index]))
+        return int(np.count_nonzero(shown_mask(inside, first, min_length)))
 
     lo, hi = 0.0, float(d.max())
     if shown(hi) < target:
@@ -1553,7 +1672,7 @@ def main(argv=None):
                         help="display scale of the beads: the drawn bead radius is this factor "
                              f"times the bead radius (default: {SPHERE_SCALE:g})")
     parser.add_argument("--min-length", type=int, default=MIN_LENGTH, metavar="N",
-                        help="show only molecules with more than N beads inside the volume "
+                        help="show only segments of molecules with at least N beads inside the volume "
                              f"(default: {MIN_LENGTH})")
     parser.add_argument("--depth-cueing", action="store_true",
                         help="start with depth cueing on (fade distant beads toward the "
@@ -1562,6 +1681,9 @@ def main(argv=None):
                         help=f"do not choose the initial volume radius such that {AUTOFOCUS_BEADS} "
                              "beads are shown; use the radius stored in the dump file instead "
                              f"(files with fewer than {AUTOFOCUS_BEADS} beads are never changed)")
+    parser.add_argument("--keyboard-layout", choices=sorted(KEYBOARD_LAYOUTS), default=KEYBOARD_LAYOUT,
+                        help="layout of your keyboard, which decides what the number row types "
+                             f"for the slot keys 1..9 and Shift+1..9 (default: {KEYBOARD_LAYOUT})")
     parser.add_argument("--nowrap", action="store_true",
                         help="do not wrap the coordinates into the bounding box given in the "
                              "dump file header (default: wrap, periodic boundary conditions)")
@@ -1571,7 +1693,8 @@ def main(argv=None):
     center = np.array(args.center, dtype=float)     # (xc, yc, zc)
     sphere_radius = 1.0                             # radius of each bead
     # positions: (n, 3); moleculeids: (n,) uint32; end_mask: True for chain ends
-    points, moleculeids, end_mask, file_radius = load_dump(args.load, center, wrap=not args.nowrap)
+    points, moleculeids, end_mask, file_radius, original_ids, original_molecules = load_dump(
+        args.load, center, wrap=not args.nowrap)
     volume_radius = file_radius if args.volume_radius is None else args.volume_radius
     if not args.noautofocus and args.volume_radius is None and len(points) >= AUTOFOCUS_BEADS:
         focus = focus_radius(points, moleculeids, center, args.min_length)
@@ -1604,13 +1727,15 @@ def main(argv=None):
         plotter, template, points, moleculeids, surface_mask, center, volume_radius,
         sphere_radius=sphere_radius, paused=True, sphere_scale=args.scale,
         min_length=args.min_length, depth_cueing=args.depth_cueing,
+        original_ids=original_ids, original_molecules=original_molecules,
+        keyboard_layout=args.keyboard_layout,
         on_radius_change=sim.set_radius,
         on_center_change=sim.set_center,
         on_ends_driven=sim.set_driven_positions,
         on_ends_released=sim.release_driven,
     )
     del points
-    print(f"Showing {len(dragger._vis)} beads of molecules with more than "
+    print(f"Showing {len(dragger._vis)} beads in segments with at least "
           f"{dragger.min_length} beads inside the volume")
 
     set_initial_view(plotter)       # the sphere starts out larger than "fit to window"
