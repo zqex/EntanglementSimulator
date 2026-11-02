@@ -2,14 +2,14 @@
 
 Three scripts to experiment with Entanglements.
 
-##Dependencies
+## Dependencies
 
 ```
 pip install pyvista numpy
 pip install imageio imageio-ffmpeg   (movies)
 ```
 
-##Before you run
+## Before you run
 
 Note that to capture keys, the keyboard layout should be set in the code.
 Default value is KEYBOARD_LAYOUT = "nordic", other options are us, uk, de.
@@ -26,7 +26,7 @@ You can store views (rotation, position) with shift+ 1-9, and restore a view wit
 
 Warning: The script becomes very slow if you render all beads in the melt, or if you by accident start the PPA dynamics which is very experimental.
 
-##beadppa.py
+## beadppa.py
 
 ![Screenshot of beadppa.py.](beadppa.png)
 
@@ -34,7 +34,7 @@ Implementation of beadppa logic. Polymers are straight lines between end beads p
 
 Use a/k to add or kill chains to make arbitrary complicated entanglements. Grab the end of a bead and use left or right arrow to add or remove beads to the chain. The beads are added between the end and the first internal bead. Several of the short-cut keys for kgview.py also works for beadppa.py. Run beadppa.py --help for complete information.
 
-##lineppa.py  Vertex model
+## lineppa.py  Vertex model
 
 ![Screenshot of lineppa.py.](lineppa.png)
 
