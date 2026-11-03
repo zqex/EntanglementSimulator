@@ -7,8 +7,8 @@ surface of the sphere. Initially the molecule is the straight line (a chord thro
 the volume) between them. Beads are spheres colored by molecule; the line of a
 molecule has the same color.
 
-Intersections: when two lines of different molecules intersect, a junction is inserted
-into both molecules at the intersection point, so each of them gets a bend there. A
+Junctions: when two lines of different molecules come closer than min_distance, a junction is
+inserted into both molecules where they touch, so each of them gets a bend there. A
 junction is drawn as a small sphere with the average color of the two molecules. The
 four line segments connected to a junction act as springs, with spring constant
 spring_constant / contour_length of the segment (long segments are soft, short ones stiff);
@@ -30,10 +30,11 @@ way) and centered on the junction (length JUNCTION_VECTOR_SCALE * |vector|, at l
 Contact dynamics: let A and B be the two molecules at a junction (A = the first, B = the
 second), v the stored junction vector (from the closest point on A to the closest point on B),
 FA the net force from the springs of A on the junction and FB the net force from those of B.
-Every step w = 0.5 (FA - FB) is computed. If the projection of w along v is positive (the chains
-are pressed against each other) v is replaced by a vector along w with length min_distance. If
-the projection is zero or negative the junction is removed from both molecules. A junction is
-created when two segments come closer than min_distance.
+Every step w = 0.5 (FA - FB) is computed and v is replaced by a vector along the axis of w with
+length min_distance. v always keeps pointing from A towards B: of the two directions along w the
+one closest to the previous v is taken, whatever the directions of FA and FB. If w is zero the
+junction is removed from both molecules. A junction is created when two segments come closer
+than min_distance.
 While two segments of different molecules are closer than PROXIMITY_DISTANCE (and not joined),
 their two closest points are connected by a thin black dotted line. Crossing lines
 are created by dragging the chain ends around.
@@ -52,6 +53,9 @@ total contour length of the molecule stays constant: length flows into the segme
 higher tension K d_i / L_i, until all segments of a molecule have L_i proportional to d_i
 (equal tension). Detection and dynamics live in the
 simulation (see DummySimulation); the viewer only draws what `get_network()` reports.
+
+Run  `python lineppa.py --help`  (or press h, H or ? in the window) for a summary of the program,
+the mouse actions and the key shortcuts: see help_text() below.
 
 Mouse
 - Left-drag on empty space  -> rotate the view
@@ -73,10 +77,13 @@ Keyboard
                      it joined add up). The two molecules do not form a new junction until
                      they have separated, otherwise it would reappear immediately.
 - a  -> create a new molecule: a straight line between two free spots on the surface
-- t  -> draw all lines thin, with the same radius;  T -> back to the thickness showing the tension
+- t  -> draw all lines thin, with the same radius, and hide the junction spheres;
+        T -> back to the thickness showing the tension (and the junction spheres)
 - r  -> shrink the spherical volume by 1 (down to a minimum radius of 5)
 - R  -> grow the spherical volume by 1
+- h, H or ?    -> print the summary, the mouse actions and the key shortcuts
 - Shift + 1..9 -> store the current positions of all chain ends in slot 1..9
+                  (Ctrl + 1..9 does the same on every keyboard layout)
 - 1..9         -> slowly move all chain ends to the positions stored in that slot, each
                   along a great circle of the sphere
 - m  -> start recording a movie (movie00000.avi, movie00001.avi, ...); M -> stop recording
@@ -102,16 +109,18 @@ New molecules are appended at the end, so they don't shift existing indices.
 Install:  pip install pyvista numpy
 Movies:   pip install imageio imageio-ffmpeg
 """
+import argparse
 import colorsys
+import locale
 import os
+import platform
 import re
+import subprocess
 import time
 
 import numpy as np
 import pyvista as pv
 import vtk
-
-KEYBOARD_LAYOUT = "nordic"
 
 ACTIVE_COLOR = (0.0, 0.0, 0.0)  # highlight color while a sphere is being dragged
 
@@ -136,12 +145,12 @@ MAX_LINE_RADIUS = 1.0           # thickest tube drawn (a very short segment has 
 MIN_VOLUME_RADIUS = 5.0
 VOLUME_RADIUS_STEP = 1.0
 
-# Shift + digit produces a layout-specific symbol; which key name VTK reports for it
-# depends on the keyboard layout (X11/Qt). Pick the layout matching your keyboard:
-# keys for Shift+1 ... Shift+9. (Where VTK reports the plain digit together with the
-# Shift modifier, e.g. on Windows, no table is needed.) Unknown shifted keys print a
-# hint with the key name, so you can add your own entry.
-
+# Shift + digit produces a layout-specific symbol; which key name (and character) the window
+# system reports for it depends on the keyboard layout. The layout is detected from the
+# environment (see detect_keyboard_layout) and selects one of these tables:
+# the key names (VTK key symbols) and characters for Shift+1 ... Shift+9. Where the window
+# system reports the plain digit together with the Shift modifier, no table is needed, and
+# Ctrl + digit works on every layout.
 SHIFTED_DIGIT_KEYSYMS = {
     "us": ("exclam", "at", "numbersign", "dollar", "percent",
            "asciicircum", "ampersand", "asterisk", "parenleft"),
@@ -152,6 +161,166 @@ SHIFTED_DIGIT_KEYSYMS = {
     "nordic": ("exclam", "quotedbl", "numbersign", "currency", "percent",
                "ampersand", "slash", "parenleft", "parenright"),
 }
+SHIFTED_DIGIT_CHARS = {
+    "us": "!@#$%^&*(",
+    "uk": '!"\u00a3$%^&*(',
+    "de": '!"\u00a7$%&/()',
+    "nordic": '!"#\u00a4%&/()',
+}
+
+# words that identify a layout: language / country codes and the names used by the platforms
+_LAYOUT_WORDS = {
+    "us": "us", "usa": "us", "en": "us", "abc": "us", "u": "us", "nordic": "nordic",
+    "gb": "uk", "uk": "uk", "british": "uk",
+    "de": "de", "at": "de", "german": "de",
+    "dk": "nordic", "da": "nordic", "danish": "nordic", "se": "nordic", "sv": "nordic",
+    "swedish": "nordic", "no": "nordic", "nb": "nordic", "nn": "nordic", "norwegian": "nordic",
+    "fi": "nordic", "finnish": "nordic", "is": "nordic", "icelandic": "nordic",
+}
+_keyboard_layout = None
+
+
+def _layout_from_text(text):
+    """Layout name for a description such as 'dk', 'da_DK', 'com.apple.keylayout.Danish'
+    (the most specific word, the last one, wins: 'en_GB' is British), or None."""
+    for word in reversed(re.findall(r"[a-z]+", str(text).lower())):
+        if word in _LAYOUT_WORDS:
+            return _LAYOUT_WORDS[word]
+    return None
+
+
+def _run(command):
+    return subprocess.run(command, capture_output=True, text=True, timeout=3).stdout
+
+
+def _layout_windows():
+    import ctypes
+    langid = ctypes.windll.user32.GetKeyboardLayout(0) & 0xFFFF
+    if langid == 0x0809:
+        return "gb"
+    return {0x06: "da", 0x1D: "sv", 0x14: "nb", 0x0B: "fi", 0x07: "de"}.get(langid & 0x3FF, "us")
+
+
+def _layout_macos():
+    return _run(["defaults", "read", "com.apple.HIToolbox",
+                 "AppleCurrentKeyboardLayoutInputSourceID"])
+
+
+def _layout_unix():
+    """X11 / Wayland / console: the XKB layout (first of a comma separated list)."""
+    for command in (["setxkbmap", "-query"], ["localectl", "status"]):
+        try:
+            match = re.search(r"(?:layout|Layout):\s*([\w-]+)", _run(command))
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if match:
+            return match.group(1)
+    if os.environ.get("XKB_DEFAULT_LAYOUT"):
+        return os.environ["XKB_DEFAULT_LAYOUT"].split(",")[0]
+    try:
+        with open("/etc/default/keyboard") as f:
+            match = re.search(r'XKBLAYOUT="?([\w-]+)', f.read())
+        return match.group(1) if match else None
+    except OSError:
+        return None
+
+
+def _layout_locale():
+    return locale.getlocale()[0] or os.environ.get("LANG", "")
+
+
+def detect_keyboard_layout():
+    """Keyboard layout ('us', 'uk', 'de' or 'nordic') taken from the environment: the variable
+    LINEPPA_KEYBOARD_LAYOUT if it is set, else what the operating system reports (Windows: the
+    active input language, macOS: the input source, Linux/BSD: the XKB layout), else the
+    language of the locale; 'us' if nothing is recognised."""
+    probes = []
+    if os.environ.get("LINEPPA_KEYBOARD_LAYOUT"):
+        probes.append(lambda: os.environ["LINEPPA_KEYBOARD_LAYOUT"])
+    system = platform.system()
+    probes.append(_layout_windows if system == "Windows"
+                  else _layout_macos if system == "Darwin" else _layout_unix)
+    probes.append(_layout_locale)
+    for probe in probes:
+        try:
+            layout = _layout_from_text(probe() or "")
+        except Exception:        # a failing probe must never stop the program
+            continue
+        if layout:
+            return layout
+    return "us"
+
+
+def get_keyboard_layout():
+    global _keyboard_layout
+    if _keyboard_layout is None:
+        _keyboard_layout = detect_keyboard_layout()
+    return _keyboard_layout
+
+
+def set_keyboard_layout(name):
+    """Use layout `name` ('us', 'uk', 'de', 'nordic') or, for 'auto'/None, detect it."""
+    global _keyboard_layout
+    _keyboard_layout = None if name in (None, "auto") else name
+
+
+def help_text():
+    """Summary of the program, the mouse actions and the key shortcuts (--help, h, H, ?)."""
+    return f"""\
+LinePPA - polymers in a spherical volume
+
+Every polymer is a piecewise linear curve between two chain ends (spheres) on the surface of the
+sphere; initially a straight line. When two polymers come closer than min_distance ({MIN_DISTANCE:g}) they
+form a junction: both get a bend there, drawn as a small sphere in the average color of the two.
+  * Each line segment is a spring with spring constant spring_constant / contour_length; the
+    thickness of a line shows its tension. Contour length slips across junctions, lowering the
+    spring energy, while the total contour length of a polymer stays constant.
+  * At a junction the colored arrows are the net spring forces FA and FB of the two polymers on
+    it, the long black arrow is their sum, and the orange arrow is the vector v between the
+    two chains (|v| = min_distance). v always points from polymer A to polymer B; it follows the
+    axis of w = (FA - FB) / 2. The junction is removed when w is zero. A dotted black line joins nearby segments (closer than
+    {PROXIMITY_DISTANCE:g}) that are not joined.
+
+Mouse
+  left-drag on empty space        rotate the view
+  right-drag, mouse wheel         zoom
+  middle-drag, Shift+left-drag    pan
+  left-drag on a chain-end sphere move it along the surface of the sphere
+  ... and Shift, cursor out past the edge of the sphere: the end moves to the other side
+  hold left button on a junction  select it (turns black), then press x
+
+Keys while a chain end is held
+  d                               delete the polymer the end belongs to
+  Right / Left arrow              add / remove contour length of the segment at the end
+Keys while a junction is held
+  x                               remove the junction from both polymers
+Keys
+  a                               add a polymer (a straight line between two free spots)
+  r / R                           shrink / grow the sphere by 1 (minimum radius 5)
+  t / T                           thin lines of equal radius (junction spheres hidden) /
+                                  thickness shows the tension (junction spheres shown)
+  Shift+1..9 (or Ctrl+1..9)       store the positions of all chain ends in slot 1..9
+  1..9                            move all chain ends to the positions stored in the slot
+  m / M                           start / stop recording a movie (movie00000.avi, ...)
+  p                               save a PNG of the view (img00000.png, ...)
+  s                               save all positions (conf00000.dump, ...)
+  h, H, ?                         print this text
+Command line
+  --help                          print this text
+  --keyboard-layout LAYOUT        us, uk, de, nordic or auto (default: detected from the
+                                  environment; the variable LINEPPA_KEYBOARD_LAYOUT overrides)
+"""
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(
+        prog="lineppa", description=help_text(), add_help=False,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("-h", "--help", action="help", help="show this help and exit")
+    parser.add_argument("--keyboard-layout", default="auto",
+                        choices=["auto", *sorted(SHIFTED_DIGIT_KEYSYMS)],
+                        help="keyboard layout used for Shift+digit (default: detect)")
+    return parser.parse_args(argv)
 
 
 def color_for_id(moleculeid):
@@ -170,7 +339,7 @@ class SphereDragger:
     CONF_PATTERN = re.compile(r"^conf(\d{5})\.dump$")
     MOVIE_PATTERN = re.compile(r"^movie(\d{5})\.avi$")
     # characters whose built-in VTK meaning (reset camera, surface mode, pick, ...) is suppressed
-    OWN_CHARS = frozenset("aAdDpPsSmMrRtTxX123456789")
+    OWN_CHARS = frozenset("aAdDhHpPsSmMrRtTxX?123456789")
 
     def __init__(self, plotter, template, actors, positions, moleculeids,
                  center, radius, sphere_radius, recall_speed=0.5, movie_fps=30, rng=None,
@@ -291,7 +460,7 @@ class SphereDragger:
 
         # Make sure PyVista's own key shortcuts for the keys we use don't also fire.
         for key in ("Up", "Down", "Left", "Right", "a", "d", "p", "s", "S", "m", "M",
-                    "r", "R", "t", "T", "x", "X", *"123456789"):
+                    "r", "R", "t", "T", "x", "X", "h", "H", "question", *"123456789"):
             try:
                 plotter.clear_events_for_key(key)
             except Exception:
@@ -448,6 +617,7 @@ class SphereDragger:
             actor.SetPosition(*p)
             scale = r / self.junction_radius
             actor.SetScale(scale, scale, scale)
+            actor.SetVisibility(not self.uniform_lines)   # no junction spheres in thin line mode
         if changed:
             self._rebuild_bonds()
         else:
@@ -946,17 +1116,21 @@ class SphereDragger:
         self.plotter.render()
 
     @staticmethod
-    def _digit_slot(key, shift):
-        """Map a key press to (slot 1..9, store?) or None. Handles the plain digit
-        (with the Shift modifier reported separately) and the layout-specific symbol
-        produced by Shift + digit."""
+    def _digit_slot(key, shift, char="", ctrl=False):
+        """Map a key press to (slot 1..9, store?) or None. Handles the plain digit (with the
+        Shift or Ctrl modifier reported separately) and the layout-specific symbol or
+        character produced by Shift + digit (layout detected from the environment)."""
         if len(key) == 1 and key in "123456789":
-            return int(key), shift
+            return int(key), shift or ctrl
         if key.startswith("KP_") and len(key) == 4 and key[3] in "123456789":
-            return int(key[3]), shift
-        symbols = SHIFTED_DIGIT_KEYSYMS.get(KEYBOARD_LAYOUT, ())
+            return int(key[3]), shift or ctrl
+        layout = get_keyboard_layout()
+        symbols = SHIFTED_DIGIT_KEYSYMS.get(layout, ())
         if key in symbols:
             return symbols.index(key) + 1, True
+        chars = SHIFTED_DIGIT_CHARS.get(layout, "")
+        if len(char) == 1 and char in chars:
+            return chars.index(char) + 1, True
         return None
 
     def _on_key(self, obj, event):
@@ -965,9 +1139,13 @@ class SphereDragger:
         if len(key) == 1 and key.isalpha() and shift:
             key = key.upper()
         lower = key.lower()
-        digit = self._digit_slot(key, shift)
+        char = self.interactor.GetKeyCode()
+        char = chr(char) if isinstance(char, int) else (char or "")
+        digit = self._digit_slot(key, shift, char, bool(self.interactor.GetControlKey()))
 
-        if lower == "p":
+        if lower == "h" or key == "question" or char == "?":
+            print(help_text())
+        elif lower == "p":
             self._save_image()
         elif lower == "s":
             self._save_configuration()
@@ -1001,8 +1179,8 @@ class SphereDragger:
                                        CONTOUR_STEP if key == "Right" else -CONTOUR_STEP)
                 self._pull_network()
         elif shift and key.islower() and len(key) > 1 and "_" not in key:
-            print(f"Shift+{key}: not recognised as a shifted digit for KEYBOARD_LAYOUT="
-                  f"'{KEYBOARD_LAYOUT}' (see SHIFTED_DIGIT_KEYSYMS at the top of the file)")
+            print(f"Shift+{key}: not recognised as a shifted digit for keyboard layout "
+                  f"'{get_keyboard_layout()}'; use Ctrl+digit, or start with --keyboard-layout")
 
 
 # --------------------------------------------------------------------------
@@ -1082,12 +1260,13 @@ class DummySimulation:
 
     Contact dynamics of v: with w = 0.5 * (FA - FB), FA and FB the net spring forces of A and B
     on the junction (see `junction_forces`) and v the stored junction vector (closest point on
-    molecule A -> closest point on molecule B): if w . v > 0 then v becomes min_distance * w / |w|,
-    otherwise (zero or negative) the junction is removed from both molecules. |w| below
-    `force_tolerance` counts as zero, and if v itself has zero length its direction is
-    undefined, so w alone decides (v = min_distance * w / |w|, or removal if w = 0). As after a
-    removal by the user, the two molecules cannot form a new junction until they are
-    further apart than min_distance.
+    molecule A -> closest point on molecule B): v becomes a vector of length min_distance along
+    the axis of w. Of the two directions along that axis the one closest to the previous v is
+    used, so v keeps pointing from A towards B whatever the directions of FA and FB (the sign of
+    w . v does not matter). If |w| is below `force_tolerance` (zero) the junction is removed from
+    both molecules; if v itself has zero length, w alone gives the direction. As after a removal
+    by the user, the two molecules cannot form a new junction until they are further apart
+    than min_distance.
 
     Proximity: pairs of segments of different molecules that are closer than
     `proximity_distance` and not joined at a junction are reported by `proximity()`
@@ -1189,8 +1368,9 @@ class DummySimulation:
 
     def _update_vectors(self):
         """Contact dynamics of the junction vectors (see the class docstring): with
-        w = 0.5 * (FA - FB), v becomes min_distance * w / |w| if w . v > 0; otherwise the
-        junction is removed."""
+        w = 0.5 * (FA - FB), v becomes min_distance along the axis of w, with the orientation
+        closest to the previous v (so it keeps pointing from A to B); no force: the junction
+        is removed."""
         if not self.jids:
             return
         forces = self.junction_forces()
@@ -1198,15 +1378,13 @@ class DummySimulation:
         for r in range(len(self.jids)):
             w = 0.5 * (forces[r, 0] - forces[r, 1])
             size = float(np.linalg.norm(w))
-            length = float(np.linalg.norm(self.jvec[r]))
-            if length < 1e-12:                           # v has no direction: w alone decides
-                pressed = size > self.force_tolerance
-            else:
-                pressed = float(w @ self.jvec[r]) / length > self.force_tolerance
-            if pressed:
-                self.jvec[r] = self.min_distance * w / size
-            else:
+            if size <= self.force_tolerance:
                 doomed.append(self.jids[r])
+                continue
+            direction = w / size
+            if float(direction @ self.jvec[r]) < 0.0:    # keep the orientation A -> B
+                direction = -direction
+            self.jvec[r] = self.min_distance * direction
         for jid in doomed:
             self.remove_junction(self.jids.index(jid))
 
@@ -1614,7 +1792,9 @@ class DummySimulation:
 #           return x[np.array(self.ids) - 1]
 
 
-def main():
+def main(argv=None):
+    args = parse_args(argv)                       # --help prints the summary and exits
+    set_keyboard_layout(args.keyboard_layout)
     rng = np.random.default_rng(42)
 
     # ---- geometry ----

@@ -11,20 +11,27 @@ pip install imageio imageio-ffmpeg   (movies)
 
 ## Before you run
 
-Note that to capture keys, the keyboard layout should be set in the code.
-Default value is KEYBOARD_LAYOUT = "nordic", other options are us, uk, de.
+Note that to capture keys, the keyboard layout need to be known. Default is "auto"
+in which case it will be determined from the environement, otherwise change KEYBOARD_LAYOUT 
+to the desired option in the LAYOUT_TABLES list, or add your keyboard here.
+Other options are us, uk, de, fr. Shift+number keys can fail if this is not set correctly.
+
+Pressing 'h' or '?' in any script will display the full list of shortcuts. Running the scripts
+with --help will print shortcuts as well as command-line arguments.
 
 ## kgview.py
 
 ![Screenshot of kgview.py.](kgview.png)
 
-kgview.py visualizes KG dump files produces with LAMMPS, essentially it is a KG microscope. 
+kgview.py visualizes the detailed structure of KG dump files produced by LAMMPS, essentially it is a KG microscope.
 
 Initially beads inside a spherical volume centered on 0,0,0 is shown with a certain radius. You can do 3D rotations and zoom of the conformation. The size of the volume shown can be controlled by r/R, the size of the beads with w/W. Display of beads is toggled with b/B while bonds are always shown. The arrow keys move the center position thus shifting which beads are shown. Shift arrow-up/down in and out of the conformation. Use kgview.py --help to see all the options.
 
 You can store views (rotation, center position) with shift+ 1-9, and restore a view with 1-9. This creates smooth transitions between the stored views. Use m/M to start/stop recording movies. p to save a png image. s to save a dump file of what is inside the volume.
 
-** Note ** : The script becomes very slow if you render all beads in the melt, or if you by accident start the PPA dynamics which is very experimental. Recording movies while manually rotating the view does not work very well.
+** Note ** : The script becomes very slow if you render all beads in the melt. In that case press 'r' to reduce the radius and number
+of beads shown until the code becomes responsive. Similar if you start the PPA dynamics by accident (e/E), which is very experimental.
+Finally, recording movies while manually rotating the view does not work very well.
 
 ## beadppa.py
 
