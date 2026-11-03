@@ -72,5 +72,11 @@ In the cylinder model we take the diameter of beads serious, and reflect this in
 
 
 
+## Rod and spring simulator
 
+![Screenshot of rod_springs_sim.py](rod_springs_sim.png)
+
+2D interactive simulator of a stiff rod connected to two springs. The springs generate a net force and torque on the rod, besides the spring interactions the dynamics adds translational and rotational friction. The sign of the torque in the dynamics can be flipped. With +1 sign, the rod aligns with the forces (tensile stress), while with -1 the rod aligns in the opposite direction (compressive stress).
+
+Compared to the beadppa and lineppa, the rod represents the distance between the two beads being entangled, or the vector of closest approch between two lines, where the entanglement vertex is inserted. An entanglement is stable as long as the stress is compresive, while it should be removed when the stress is tensile.
 
