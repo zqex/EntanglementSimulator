@@ -455,7 +455,8 @@ class SphereDragger:
         plotter.add_actor(self.proximity_actor, reset_camera=False, pickable=False)
         self.junction_positions = np.zeros((0, 3))
         self.junction_vectors = np.zeros((0, 3))    # stored closest-point vector of each junction
-        self._seg_shift = None          # (2S, 3) offsets of the segment end points (shifted chains)
+        self._shift_row = np.zeros(0, dtype=int)    # junction row of every drawn line end (-1: none)
+        self._shift_sign = np.zeros(0)  # -0.5 (strand A) / +0.5 (strand B) of every drawn line end
         self.junction_molecules = []
         self._line_signature = None
 
@@ -542,19 +543,28 @@ class SphereDragger:
         return np.minimum(TENSION_THICKNESS * np.array(self._seg_tension, dtype=float),
                           MAX_LINE_RADIUS)
 
+    def _current_shift(self):
+        """Shift of every drawn line end: -0.5 v (strand A) or +0.5 v (strand B) at a junction,
+        from the junction vectors as they are NOW (the rods rotate every step)."""
+        shift = np.zeros((len(self._shift_row), 3))
+        hit = (self._shift_row >= 0) & (self._shift_row < len(self.junction_vectors))
+        shift[hit] = self._shift_sign[hit, None] * self.junction_vectors[self._shift_row[hit]]
+        return shift
+
     def _refresh_bonds(self):
         """Cheap update when only positions (and with them the tensions) changed."""
         if self.bond_mesh is None:
             return
         points = self._all_points()
         if self._seg_nodes.max() < len(points):
-            self.bond_mesh.points = points[self._seg_nodes].reshape(-1, 3) + self._seg_shift
+            self.bond_mesh.points = (points[self._seg_nodes].reshape(-1, 3)
+                                     + self._current_shift())
             self.bond_mesh.point_data["radius"] = np.repeat(self._segment_radii(), 2)
             self.bond_mesh.GetPointData().SetActiveScalars("radius")
 
     def _rebuild_bonds(self):
         """Needed when the number of beads, junctions or lines changed."""
-        nodes, rgb, shift = [], [], []
+        nodes, rgb, rows, signs = [], [], [], []
         n = len(self.positions)
         for mol, idx, _contours, _tensions in self.lines:
             color = (np.array(color_for_id(mol)) * 255).astype(np.uint8)
@@ -565,9 +575,11 @@ class SphereDragger:
                     r = node - n
                     if 0 <= r < len(self.junction_vectors):
                         first = self.junction_molecules[r][0] == mol
-                        shift.append((-0.5 if first else 0.5) * self.junction_vectors[r])
+                        rows.append(r)
+                        signs.append(-0.5 if first else 0.5)
                     else:
-                        shift.append(np.zeros(3))
+                        rows.append(-1)
+                        signs.append(0.0)
         if not nodes:
             self.bond_mesh, self._seg_nodes = None, None
             self.bond_actor.SetVisibility(False)
@@ -575,8 +587,9 @@ class SphereDragger:
         self._seg_nodes = np.array(nodes, dtype=int)
         k = np.arange(len(nodes))
         cells = np.column_stack([np.full(len(nodes), 2), 2 * k, 2 * k + 1]).ravel()
-        self._seg_shift = np.array(shift, dtype=float).reshape(-1, 3)
-        mesh = pv.PolyData(self._all_points()[self._seg_nodes].reshape(-1, 3) + self._seg_shift,
+        self._shift_row = np.array(rows, dtype=int)
+        self._shift_sign = np.array(signs, dtype=float)
+        mesh = pv.PolyData(self._all_points()[self._seg_nodes].reshape(-1, 3) + self._current_shift(),
                            lines=cells.astype(np.int64))
         mesh.point_data["radius"] = np.repeat(self._segment_radii(), 2)
         mesh.point_data["rgb"] = np.array(rgb, dtype=np.uint8)
