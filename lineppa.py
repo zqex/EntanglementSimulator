@@ -131,6 +131,8 @@ ACTIVE_COLOR = (0.0, 0.0, 0.0)  # highlight color while a sphere is being dragge
 CONTOUR_STEP = 2.0              # contour length added/removed per press of Right/Left arrow
 INITIAL_ZOOM = 1.6              # camera zoom when the window opens
 MAX_ROD_ANGLE = 0.5               # largest rotation (radians) of a junction rod in one step
+INSTANT_SWEEPS = 6              # fixed-point sweeps of the instantaneous rod dynamics per step
+ROTATION_MODES = ("none", "instantaneous", "damped")    # key v cycles through them
 START_GAP = 1.25                # initial distance between the two starting polymers, in units of min_distance
 MIN_DISTANCE = 1.0              # junctions form when two segments come closer than this; the two
                                 # chains of a junction are then held exactly this far apart
@@ -308,7 +310,10 @@ Keys
                                   thickness shows the tension (junction spheres shown)
   Shift+1..9 (or Ctrl+1..9)       store the positions of all chain ends in slot 1..9
   1..9                            move all chain ends to the positions stored in the slot
-  v                               enable / disable the rotation dynamics of the junction rods v
+  b                               enable / disable the automatic destruction of entanglements
+                                  (v flips direction between two steps, or has zero length)
+  v                               cycle the rotation dynamics of the junction rods v:
+                                  none -> instantaneous -> damped relaxation -> none ...
   m / M                           start / stop recording a movie (movie00000.avi, ...)
   p                               save a PNG of the view (img00000.png, ...)
   s                               save all positions (conf00000.dump, ...)
@@ -347,7 +352,7 @@ class SphereDragger:
     CONF_PATTERN = re.compile(r"^conf(\d{5})\.dump$")
     MOVIE_PATTERN = re.compile(r"^movie(\d{5})\.avi$")
     # characters whose built-in VTK meaning (reset camera, surface mode, pick, ...) is suppressed
-    OWN_CHARS = frozenset("aAdDhHpPsSmMrRtTvVxX?123456789")
+    OWN_CHARS = frozenset("aAbBdDhHpPsSmMrRtTvVxX?123456789")
 
     def __init__(self, plotter, template, actors, positions, moleculeids,
                  center, radius, sphere_radius, recall_speed=0.5, movie_fps=30, rng=None,
@@ -357,7 +362,7 @@ class SphereDragger:
                  on_add_molecule=None, on_delete_molecule=None,
                  on_radius_change=None, on_ends_driven=None, on_ends_released=None,
                  on_contour_change=None, on_remove_junction=None, on_rotation_toggle=None,
-                 initial_zoom=INITIAL_ZOOM):
+                 on_destruction_toggle=None, initial_zoom=INITIAL_ZOOM):
         self.plotter = plotter
         self.renderer = plotter.renderer
         self.template = template        # sphere mesh used for newly created beads
@@ -407,8 +412,10 @@ class SphereDragger:
         self.picker = vtk.vtkPropPicker()
         self.dragged = None             # index of the chain end being dragged
         self.selected_junction = None   # index of the junction being held (left button down)
-        self.on_rotation_toggle = on_rotation_toggle    # (enabled: bool) -> None
-        self.rotation_enabled = True    # toggled with v: rotation dynamics of the junction rods
+        self.on_rotation_toggle = on_rotation_toggle    # (mode: str) -> None
+        self.on_destruction_toggle = on_destruction_toggle  # (enabled: bool) -> None
+        self.destruction_enabled = True     # toggled with b: automatic destruction of entanglements
+        self.rotation_mode = ROTATION_MODES[-1]         # cycled with v: "none", "instantaneous", "damped"
         self.uniform_lines = False      # True after t: all lines thin and equally thick
         self._pending_zoom = initial_zoom   # applied on the first timer tick, after the window opened
         self._side = 1                  # +1: dragged bead on the front (camera) side, -1: back
@@ -472,7 +479,7 @@ class SphereDragger:
 
         # Make sure PyVista's own key shortcuts for the keys we use don't also fire.
         for key in ("Up", "Down", "Left", "Right", "a", "d", "p", "s", "S", "m", "M",
-                    "r", "R", "t", "T", "v", "V", "x", "X", "h", "H", "question", *"123456789"):
+                    "r", "R", "t", "T", "v", "V", "b", "B", "x", "X", "h", "H", "question", *"123456789"):
             try:
                 plotter.clear_events_for_key(key)
             except Exception:
@@ -1192,10 +1199,17 @@ class SphereDragger:
             self._pull_network()
             self.plotter.render()
         elif lower == "v":
-            self.rotation_enabled = not self.rotation_enabled      # v: rod rotation on / off
+            # v: none -> instantaneous -> damped -> none ...
+            self.rotation_mode = ROTATION_MODES[(ROTATION_MODES.index(self.rotation_mode) + 1)
+                                                % len(ROTATION_MODES)]
             if self.on_rotation_toggle is not None:
-                self.on_rotation_toggle(self.rotation_enabled)
-            print("Rod rotation dynamics", "enabled" if self.rotation_enabled else "disabled")
+                self.on_rotation_toggle(self.rotation_mode)
+            print("Rod rotation dynamics:", self.rotation_mode)
+        elif lower == "b":
+            self.destruction_enabled = not self.destruction_enabled    # b: destruction on / off
+            if self.on_destruction_toggle is not None:
+                self.on_destruction_toggle(self.destruction_enabled)
+            print("Entanglement destruction:", "enabled" if self.destruction_enabled else "disabled")
         elif key == "m":
             self._start_movie()
         elif key == "M":
@@ -1315,8 +1329,16 @@ class DummySimulation:
     omega = rod_damping * omega - rod_rate * T (omega perpendicular to v), and v is rotated by
     omega about its axis (angle per step limited to MAX_ROD_ANGLE). The rod keeps its length and
     orientation (A -> B) by construction. Junctions are only removed by the user.
-    The rotation can be switched off and on (`set_rotation_enabled`, key v): the rods then keep
-    their direction.
+    Destruction of entanglements (`set_destruction_enabled`, key b, default enabled): after each
+    update of the rods a junction is removed from both molecules if the direction of its v
+    flipped between two steps (v . v_previous < 0) or if v has zero length (in the instantaneous
+    mode: w = 0, so v has no direction). The pair cannot form a new junction until it is
+    further apart than min_distance.
+    The rotation dynamics has three modes (`set_rotation_mode`, key v cycles through them):
+    "none" (the rods keep their direction), "instantaneous" (every step each rod jumps to its
+    equilibrium direction for the instantaneous forces (a few sweeps, as the forces depend on v): along w = 0.5 (FA - FB), the direction
+    in which the torque vanishes and the damped dynamics comes to rest; the rod is unchanged
+    if w is zero) and "damped" (the relaxation described above, the default).
     As after a removal by the user, the two molecules cannot form a new junction until they
     are further apart than min_distance.
 
@@ -1340,7 +1362,8 @@ class DummySimulation:
         self.spring_constant = float(spring_constant)   # segment spring constant = this / contour length
         self.proximity_distance = float(proximity_distance)
         self.force_tolerance = float(force_tolerance)   # forces smaller than this count as zero
-        self.rotation_enabled = True                # False: the rods keep their direction
+        self.rotation_mode = ROTATION_MODES[-1]     # "none", "instantaneous" or "damped"
+        self.destruction_enabled = True             # destroy entanglements whose v flips / vanishes
         self.rod_rate = float(rod_rate)             # angular mobility of the junction rods
         self.rod_damping = float(rod_damping)       # fraction of the angular velocity kept per step
         self.slip_rate = float(slip_rate)           # speed of contour length slipping across junctions
@@ -1424,18 +1447,55 @@ class DummySimulation:
         self._suppressed.add(frozenset(mols))
         self._prev_sign = {}
 
-    def set_rotation_enabled(self, enabled):
-        """Switch the rotation dynamics of the junction rods on or off (angular velocity reset)."""
-        self.rotation_enabled = bool(enabled)
+    def set_destruction_enabled(self, enabled):
+        """Switch the automatic destruction of entanglements (see `_update_vectors`) on or off."""
+        self.destruction_enabled = bool(enabled)
+
+    def set_rotation_mode(self, mode):
+        """Select the rotation dynamics of the junction rods: "none", "instantaneous" or
+        "damped" (angular velocities are reset)."""
+        if mode not in ROTATION_MODES:
+            raise ValueError(f"rotation mode must be one of {ROTATION_MODES}")
+        self.rotation_mode = mode
         self.jomega[:] = 0.0
 
     def _update_vectors(self):
         """Rigid-rod dynamics of the junction vectors (see the class docstring): the rod v of
         length min_distance carries FA at -0.5 v and FB at +0.5 v and turns, damped, opposite the
-        torque T = 0.5 v x (FB - FA)."""
-        if not self.jids or not self.rotation_enabled:
+        torque T = 0.5 v x (FB - FA). In the mode "instantaneous" the rod jumps to its equilibrium
+        direction along w = 0.5 (FA - FB); in the mode "none" nothing happens."""
+        if not self.jids:
             return
+        old = self.jvec.copy()
+        zero = set()                                    # rows where v has no length / direction
+        if self.rotation_mode != "none":
+            self._rotate_vectors(zero)
+        if self.destruction_enabled:
+            doomed = []
+            for r in range(len(self.jids)):
+                flipped = float(old[r] @ self.jvec[r]) < 0.0       # direction of v flipped
+                if flipped or r in zero or float(np.linalg.norm(self.jvec[r])) <= 1e-12:
+                    doomed.append(self.jids[r])
+            for jid in doomed:                          # the entanglement is destroyed
+                self.remove_junction(self.jids.index(jid))
+
+    def _rotate_vectors(self, zero):
+        """Apply the selected rotation dynamics to all rods; `zero` collects the rows where the
+        rod would have zero length (instantaneous mode with w = 0)."""
         forces = self.junction_forces()
+        if self.rotation_mode == "instantaneous":
+            for sweep in range(INSTANT_SWEEPS):     # the forces depend on v: iterate to self-consistency
+                if sweep:
+                    forces = self.junction_forces()
+                for r in range(len(self.jids)):
+                    w = 0.5 * (forces[r, 0] - forces[r, 1])
+                    size = float(np.linalg.norm(w))
+                    if size > self.force_tolerance:
+                        self.jvec[r] = self.min_distance * w / size
+                        zero.discard(r)
+                    else:
+                        zero.add(r)                     # w = 0: v has no length / direction
+            return
         for r in range(len(self.jids)):
             v = self.jvec[r]
             torque = 0.5 * np.cross(v, forces[r, 1] - forces[r, 0])
@@ -1926,7 +1986,8 @@ def main(argv=None):
         get_forces=sim.junction_forces,
         get_vectors=sim.junction_vectors,
         on_remove_junction=sim.remove_junction,
-        on_rotation_toggle=sim.set_rotation_enabled,
+        on_rotation_toggle=sim.set_rotation_mode,
+        on_destruction_toggle=sim.set_destruction_enabled,
         on_drag=sim.set_surface_position,
         on_release=on_release,
         on_add_molecule=sim.add_molecule,
