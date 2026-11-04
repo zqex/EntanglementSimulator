@@ -16,7 +16,8 @@ their tension pulls the junction towards its four neighbours (chain ends or othe
 Forces: at every junction two colored arrows show, for each of the two molecules, the sum of
 the two spring forces its two segments exert on the junction (in the color of that molecule),
 and a black arrow shows the total force of all four springs, the force that moves the
-junction. A spring pulls with k * (neighbour - junction), k = spring_constant / contour_length.
+junction. The colored arrows start at the ends of the rod v (FA at P - 0.5 v, FB at P + 0.5 v),
+the black arrow at the centre of mass P. A spring pulls with k * (neighbour - junction), k = spring_constant / contour_length.
 Arrow length = FORCE_ARROW_SCALE * force (NET_ARROW_SCALE * force for the black arrow).
 Shifted chains: the junction position J is shared, but chain A passes through J - 0.5 v and
 chain B through J + 0.5 v, i.e. through the two closest points they had when the junction formed.
@@ -24,17 +25,20 @@ Forces and energies of chain A use the shifted node J - 0.5 v, those of chain B 
 and the chains are drawn through the shifted nodes. The forces on the junction add up.
 
 Junction vector: when a junction is formed, the vector between the two closest points of the
-two segments (from the point on the first molecule to the point on the second) is stored with
-the junction. It is drawn as a short orange arrow, parallel to the vector (pointing the same
+two segments is stored with the junction as the initial v. A is the grabbed strand and B the
+strand that is not grabbed (if neither or both are grabbed, A is the first segment found); v
+starts at the point on A and ends at the point on B. The kinks sit at P - 0.5 v (A) and
+P + 0.5 v (B); afterwards v is a rigid rod that evolves with damped dynamics opposite to the torque. It is drawn as a short arrow, orange if DP = 0.5 v . (FA - FB) < 0 and black if DP >= 0, parallel to the vector (pointing the same
 way) and centered on the junction (length JUNCTION_VECTOR_SCALE * |vector|, at least MIN_JUNCTION_VECTOR_LENGTH).
-Contact dynamics: let A and B be the two molecules at a junction (A = the first, B = the
-second), v the stored junction vector (from the closest point on A to the closest point on B),
-FA the net force from the springs of A on the junction and FB the net force from those of B.
-Every step w = 0.5 (FA - FB) is computed and v is replaced by a vector along the axis of w with
-length min_distance. v always keeps pointing from A towards B: of the two directions along w the
-one closest to the previous v is taken, whatever the directions of FA and FB. If w is zero the
-junction is removed from both molecules. A junction is created when two segments come closer
-than min_distance.
+Contact dynamics (rigid rod): let A and B be the two molecules at a junction (A = the strand that was
+grabbed when the junction formed, B = the other). The junction vector v is a thin rigid rod of constant
+length min_distance that starts out pointing from the A connection point to the B connection point; its centre is the junction vertex P (the
+centre of mass of the rod). The two A segments give a net force FA that attacks at P - 0.5 v, the
+two B segments a net force FB that attacks at P + 0.5 v. P moves under FA + FB as before. The rod
+turns under the net torque of the two forces, T = (-0.5 v) x FA + (0.5 v) x FB, and always
+moves opposite to T. The rotation is damped: the angular velocity keeps a fraction `rod_damping`
+per step and gains -`rod_rate` * T. The rod comes to rest along the axis of w = 0.5 (FA - FB), pointing along w. v keeps its length, and since it only rotates continuously it keeps pointing from
+A towards B. A junction is created when two segments come closer than min_distance.
 While two segments of different molecules are closer than PROXIMITY_DISTANCE (and not joined),
 their two closest points are connected by a thin black dotted line. Crossing lines
 are created by dragging the chain ends around.
@@ -126,6 +130,8 @@ ACTIVE_COLOR = (0.0, 0.0, 0.0)  # highlight color while a sphere is being dragge
 
 CONTOUR_STEP = 2.0              # contour length added/removed per press of Right/Left arrow
 INITIAL_ZOOM = 1.6              # camera zoom when the window opens
+MAX_ROD_ANGLE = 0.5               # largest rotation (radians) of a junction rod in one step
+START_GAP = 1.25                # initial distance between the two starting polymers, in units of min_distance
 MIN_DISTANCE = 1.0              # junctions form when two segments come closer than this; the two
                                 # chains of a junction are then held exactly this far apart
 PROXIMITY_DISTANCE = 2.0        # nearby (not joined) segments get a dotted line below this distance
@@ -138,7 +144,8 @@ NET_ARROW_SCALE = 5.0 * FORCE_ARROW_SCALE   # the black total-force arrow is dra
 JUNCTION_VECTOR_SCALE = 20.0    # length of the orange arrow per unit length of the stored vector
 MIN_JUNCTION_VECTOR_LENGTH = 5.0    # ... but never shorter than this, so it stays visible
 JUNCTION_VECTOR_WIDTH = 1.5     # width of the orange arrow
-JUNCTION_VECTOR_COLOR = (1.0, 0.55, 0.0)    # orange
+JUNCTION_VECTOR_COLOR = (1.0, 0.55, 0.0)    # orange: DP < 0
+JUNCTION_VECTOR_COLOR_POSITIVE = (0.0, 0.0, 0.0)    # black: DP >= 0
 DOT_SPACING = 0.2               # distance between the dots of the line between nearby segments
 MAX_LINE_RADIUS = 1.0           # thickest tube drawn (a very short segment has a huge tension)
 
@@ -276,9 +283,9 @@ form a junction: both get a bend there, drawn as a small sphere in the average c
     thickness of a line shows its tension. Contour length slips across junctions, lowering the
     spring energy, while the total contour length of a polymer stays constant.
   * At a junction the colored arrows are the net spring forces FA and FB of the two polymers on
-    it, the long black arrow is their sum, and the orange arrow is the vector v between the
-    two chains (|v| = min_distance). v always points from polymer A to polymer B; it follows the
-    axis of w = (FA - FB) / 2. The junction is removed when w is zero. A dotted black line joins nearby segments (closer than
+    it (attacking the two rod ends, P -/+ 0.5 v), the long black arrow is their sum, and the orange (DP < 0) or black (DP >= 0, DP = 0.5 v . (FA - FB)) arrow is the vector v between the
+    two chains (|v| = min_distance). v is a rigid rod centred on the
+    junction; it rotates (damped) under the torque of the two net forces. A dotted black line joins nearby segments (closer than
     {PROXIMITY_DISTANCE:g}) that are not joined.
 
 Mouse
@@ -301,6 +308,7 @@ Keys
                                   thickness shows the tension (junction spheres shown)
   Shift+1..9 (or Ctrl+1..9)       store the positions of all chain ends in slot 1..9
   1..9                            move all chain ends to the positions stored in the slot
+  v                               enable / disable the rotation dynamics of the junction rods v
   m / M                           start / stop recording a movie (movie00000.avi, ...)
   p                               save a PNG of the view (img00000.png, ...)
   s                               save all positions (conf00000.dump, ...)
@@ -339,7 +347,7 @@ class SphereDragger:
     CONF_PATTERN = re.compile(r"^conf(\d{5})\.dump$")
     MOVIE_PATTERN = re.compile(r"^movie(\d{5})\.avi$")
     # characters whose built-in VTK meaning (reset camera, surface mode, pick, ...) is suppressed
-    OWN_CHARS = frozenset("aAdDhHpPsSmMrRtTxX?123456789")
+    OWN_CHARS = frozenset("aAdDhHpPsSmMrRtTvVxX?123456789")
 
     def __init__(self, plotter, template, actors, positions, moleculeids,
                  center, radius, sphere_radius, recall_speed=0.5, movie_fps=30, rng=None,
@@ -348,7 +356,8 @@ class SphereDragger:
                  on_drag=None, on_release=None,
                  on_add_molecule=None, on_delete_molecule=None,
                  on_radius_change=None, on_ends_driven=None, on_ends_released=None,
-                 on_contour_change=None, on_remove_junction=None, initial_zoom=INITIAL_ZOOM):
+                 on_contour_change=None, on_remove_junction=None, on_rotation_toggle=None,
+                 initial_zoom=INITIAL_ZOOM):
         self.plotter = plotter
         self.renderer = plotter.renderer
         self.template = template        # sphere mesh used for newly created beads
@@ -398,6 +407,8 @@ class SphereDragger:
         self.picker = vtk.vtkPropPicker()
         self.dragged = None             # index of the chain end being dragged
         self.selected_junction = None   # index of the junction being held (left button down)
+        self.on_rotation_toggle = on_rotation_toggle    # (enabled: bool) -> None
+        self.rotation_enabled = True    # toggled with v: rotation dynamics of the junction rods
         self.uniform_lines = False      # True after t: all lines thin and equally thick
         self._pending_zoom = initial_zoom   # applied on the first timer tick, after the window opened
         self._side = 1                  # +1: dragged bead on the front (camera) side, -1: back
@@ -460,7 +471,7 @@ class SphereDragger:
 
         # Make sure PyVista's own key shortcuts for the keys we use don't also fire.
         for key in ("Up", "Down", "Left", "Right", "a", "d", "p", "s", "S", "m", "M",
-                    "r", "R", "t", "T", "x", "X", "h", "H", "question", *"123456789"):
+                    "r", "R", "t", "T", "v", "V", "x", "X", "h", "H", "question", *"123456789"):
             try:
                 plotter.clear_events_for_key(key)
             except Exception:
@@ -649,6 +660,8 @@ class SphereDragger:
         vector (pointing the same way) and centered on the junction."""
         vectors = self.junction_vectors
         count = min(len(vectors), len(self.junction_positions))
+        forces = (np.asarray(self.get_forces(), dtype=float).reshape(-1, 2, 3)
+                  if self.get_forces is not None else np.zeros((0, 2, 3)))
         while len(self.vector_arrows) < count:
             actor = vtk.vtkActor()
             actor.SetMapper(self.arrow_mapper)
@@ -663,8 +676,12 @@ class SphereDragger:
             u = vectors[j] / magnitude
             length = max(JUNCTION_VECTOR_SCALE * magnitude, MIN_JUNCTION_VECTOR_LENGTH)
             start = self.junction_positions[j] - 0.5 * length * u    # middle of the arrow at the junction
+            color = JUNCTION_VECTOR_COLOR
+            if j < len(forces):     # DP = 0.5 v . (FA - FB): orange if negative, black otherwise
+                if 0.5 * float(vectors[j] @ (forces[j, 0] - forces[j, 1])) >= 0.0:
+                    color = JUNCTION_VECTOR_COLOR_POSITIVE
             self._set_arrow(self.vector_arrows[j], start, u * length, JUNCTION_VECTOR_WIDTH,
-                            JUNCTION_VECTOR_COLOR, scale=1.0)
+                            color, scale=1.0)
         for actor in self.vector_arrows[count:]:
             actor.SetVisibility(False)
 
@@ -681,11 +698,13 @@ class SphereDragger:
             self.plotter.add_actor(actor, reset_camera=False, pickable=False)
             self.arrow_actors.append(actor)
         for j in range(count):
-            origin = self.junction_positions[j]
+            origin = self.junction_positions[j]     # centre of mass of the rod: the net force
+            half = (0.5 * self.junction_vectors[j] if j < len(self.junction_vectors)
+                    else np.zeros(3))
             mol_a, mol_b = self.junction_molecules[j]
-            self._set_arrow(self.arrow_actors[3 * j], origin, forces[j, 0],
+            self._set_arrow(self.arrow_actors[3 * j], origin - half, forces[j, 0],     # FA at the A end
                             FORCE_ARROW_WIDTH, color_for_id(mol_a))
-            self._set_arrow(self.arrow_actors[3 * j + 1], origin, forces[j, 1],
+            self._set_arrow(self.arrow_actors[3 * j + 1], origin + half, forces[j, 1],  # FB at the B end
                             FORCE_ARROW_WIDTH, color_for_id(mol_b))
             self._set_arrow(self.arrow_actors[3 * j + 2], origin, forces[j].sum(axis=0),
                             NET_ARROW_WIDTH, (0.0, 0.0, 0.0), NET_ARROW_SCALE)
@@ -1159,6 +1178,11 @@ class SphereDragger:
             self.uniform_lines = key == "t"        # t: thin, equal lines; T: thickness = tension
             self._pull_network()
             self.plotter.render()
+        elif lower == "v":
+            self.rotation_enabled = not self.rotation_enabled      # v: rod rotation on / off
+            if self.on_rotation_toggle is not None:
+                self.on_rotation_toggle(self.rotation_enabled)
+            print("Rod rotation dynamics", "enabled" if self.rotation_enabled else "disabled")
         elif key == "m":
             self._start_movie()
         elif key == "M":
@@ -1214,6 +1238,17 @@ def make_molecules(n_molecules, center, radius, rng):
     return positions, moleculeids
 
 
+def make_perpendicular_pair(center, radius, gap):
+    """Starting state: two straight polymers, perpendicular to each other, that pass each other at
+    the distance `gap` without touching: one along x (through the centre), one along y, shifted
+    by `gap` along z. Their ends are on the surface. Same layout as make_molecules."""
+    center = np.asarray(center, dtype=float)
+    half = float(np.sqrt(radius ** 2 - gap ** 2))
+    positions = np.array([[-radius, 0.0, 0.0], [radius, 0.0, 0.0],
+                          [0.0, -half, gap], [0.0, half, gap]]) + center
+    return positions, np.array([0, 0, 1, 1], dtype=np.uint32)
+
+
 # --------------------------------------------------------------------------
 # Stand-in for the simulation. Replace with your LAMMPS wrapper (see below).
 # --------------------------------------------------------------------------
@@ -1258,15 +1293,19 @@ class DummySimulation:
     energies, slip, intersection and proximity detection) uses the chain's own shifted node
     positions; the junction position J itself moves under the sum of the forces of both chains.
 
-    Contact dynamics of v: with w = 0.5 * (FA - FB), FA and FB the net spring forces of A and B
-    on the junction (see `junction_forces`) and v the stored junction vector (closest point on
-    molecule A -> closest point on molecule B): v becomes a vector of length min_distance along
-    the axis of w. Of the two directions along that axis the one closest to the previous v is
-    used, so v keeps pointing from A towards B whatever the directions of FA and FB (the sign of
-    w . v does not matter). If |w| is below `force_tolerance` (zero) the junction is removed from
-    both molecules; if v itself has zero length, w alone gives the direction. As after a removal
-    by the user, the two molecules cannot form a new junction until they are further apart
-    than min_distance.
+    Contact dynamics of v (rigid rod): v is a thin rigid rod of constant length min_distance from
+    the A connection point to the B connection point, centred on the junction position P (its
+    centre of mass). FA and FB are the net spring forces of the two A segments and of the two
+    B segments (see `junction_forces`); FA attacks at P - 0.5 v and FB at P + 0.5 v. P moves under
+    FA + FB as before. The torque on the rod is T = (-0.5 v) x FA + (0.5 v) x FB = 0.5 v x (FB - FA).
+    The rod always moves opposite to T, with damping: per step
+    omega = rod_damping * omega - rod_rate * T (omega perpendicular to v), and v is rotated by
+    omega about its axis (angle per step limited to MAX_ROD_ANGLE). The rod keeps its length and
+    orientation (A -> B) by construction. Junctions are only removed by the user.
+    The rotation can be switched off and on (`set_rotation_enabled`, key v): the rods then keep
+    their direction.
+    As after a removal by the user, the two molecules cannot form a new junction until they
+    are further apart than min_distance.
 
     Proximity: pairs of segments of different molecules that are closer than
     `proximity_distance` and not joined at a junction are reported by `proximity()`
@@ -1275,7 +1314,8 @@ class DummySimulation:
     def __init__(self, positions, moleculeids, center, radius, bead_radius, substeps=5,
                  spring_rate=0.02, min_distance=MIN_DISTANCE, crossing_tolerance=2.0,
                  min_contour_length=0.5, spring_constant=30.0,
-                 proximity_distance=PROXIMITY_DISTANCE, slip_rate=0.02, force_tolerance=1e-9):
+                 proximity_distance=PROXIMITY_DISTANCE, slip_rate=0.02, force_tolerance=1e-9,
+                 rod_rate=0.01, rod_damping=0.8):
         self.x = np.array(positions, dtype=float).reshape(-1, 3)   # chain ends (n, 3)
         self.moleculeids = np.array(moleculeids, dtype=np.uint32)
         self.center = np.asarray(center, dtype=float)
@@ -1287,6 +1327,9 @@ class DummySimulation:
         self.spring_constant = float(spring_constant)   # segment spring constant = this / contour length
         self.proximity_distance = float(proximity_distance)
         self.force_tolerance = float(force_tolerance)   # forces smaller than this count as zero
+        self.rotation_enabled = True                # False: the rods keep their direction
+        self.rod_rate = float(rod_rate)             # angular mobility of the junction rods
+        self.rod_damping = float(rod_damping)       # fraction of the angular velocity kept per step
         self.slip_rate = float(slip_rate)           # speed of contour length slipping across junctions
         self.near = []                  # [(molecule_a, molecule_b, point_a, point_b)]
         self.min_distance = float(min_distance)     # junctions form below this distance; |v| = this
@@ -1299,6 +1342,8 @@ class DummySimulation:
         self.jmols = []                 # [(moleculeid_a, moleculeid_b)]
         self._suppressed = set()        # {frozenset({mol, mol})}: removed by the user, may not rejoin yet
         self.jvec = np.zeros((0, 3))    # vector between the two closest points when the junction formed
+        self.jomega = np.zeros((0, 3))  # angular velocity of each junction rod
+        self.jsign = []                 # +1/-1: side of B relative to A, sign(v . (tA x tB)) at formation; 0 unknown
         self.chains = {int(m): [] for m in np.unique(self.moleculeids)}  # molecule -> [jid, ...] in order
         # contour length of every segment: molecule -> [L, ...], one more entry than chains[mol];
         # initially the straight length of the molecule
@@ -1366,27 +1411,33 @@ class DummySimulation:
         self._suppressed.add(frozenset(mols))
         self._prev_sign = {}
 
+    def set_rotation_enabled(self, enabled):
+        """Switch the rotation dynamics of the junction rods on or off (angular velocity reset)."""
+        self.rotation_enabled = bool(enabled)
+        self.jomega[:] = 0.0
+
     def _update_vectors(self):
-        """Contact dynamics of the junction vectors (see the class docstring): with
-        w = 0.5 * (FA - FB), v becomes min_distance along the axis of w, with the orientation
-        closest to the previous v (so it keeps pointing from A to B); no force: the junction
-        is removed."""
-        if not self.jids:
+        """Rigid-rod dynamics of the junction vectors (see the class docstring): the rod v of
+        length min_distance carries FA at -0.5 v and FB at +0.5 v and turns, damped, opposite the
+        torque T = 0.5 v x (FB - FA)."""
+        if not self.jids or not self.rotation_enabled:
             return
         forces = self.junction_forces()
-        doomed = []
         for r in range(len(self.jids)):
-            w = 0.5 * (forces[r, 0] - forces[r, 1])
-            size = float(np.linalg.norm(w))
-            if size <= self.force_tolerance:
-                doomed.append(self.jids[r])
-                continue
-            direction = w / size
-            if float(direction @ self.jvec[r]) < 0.0:    # keep the orientation A -> B
-                direction = -direction
-            self.jvec[r] = self.min_distance * direction
-        for jid in doomed:
-            self.remove_junction(self.jids.index(jid))
+            v = self.jvec[r]
+            torque = 0.5 * np.cross(v, forces[r, 1] - forces[r, 0])
+            omega = self.rod_damping * self.jomega[r] - self.rod_rate * torque   # opposite the torque
+            omega = omega - (omega @ v) / (v @ v) * v      # only rotation that turns the rod
+            angle = float(np.linalg.norm(omega))
+            if angle > MAX_ROD_ANGLE:
+                omega *= MAX_ROD_ANGLE / angle
+                angle = MAX_ROD_ANGLE
+            self.jomega[r] = omega
+            if angle > 1e-12:                               # Rodrigues rotation of v about omega
+                k = omega / angle
+                v = v * np.cos(angle) + np.cross(k, v) * np.sin(angle)
+                v = v * (self.min_distance / np.linalg.norm(v))
+                self.jvec[r] = v
 
     def delete_molecule(self, first_index, count):
         """The user deleted the molecule occupying beads [first_index, first_index + count).
@@ -1498,11 +1549,17 @@ class DummySimulation:
                 np.array(kk, dtype=float).reshape(-1, 4),
                 np.array(off, dtype=float).reshape(-1, 4, 3))
 
-    def _add_junction(self, seg_a, seg_b, position, lines, fractions, vector):
+    def _is_grabbed(self, mol):
+        """True if the user currently holds a chain end of molecule `mol`."""
+        return any(int(self.moleculeids[i]) == int(mol) for i in self.held if i < len(self.moleculeids))
+
+    def _add_junction(self, seg_a, seg_b, position, lines, fractions, vector, side=0):
         """Insert a junction into both molecules, between the end nodes of their segments.
         `fractions` = where the junction sits on each segment (0 = first node, 1 = second);
         the contour length of the segment is divided in that proportion. `vector` is the vector
-        between the two closest points (point on seg_a -> point on seg_b), stored for display."""
+        between the two closest points (point on seg_a -> point on seg_b), stored for display;
+        `side` is sign(vector . (t_a x t_b)) with t_a, t_b the directions of the two segments:
+        which chain lies on the B side of the crossing (0 if undefined)."""
         jid = self.next_jid
         self.next_jid += 1
         for (m, a, _b), f in zip((seg_a, seg_b), fractions):
@@ -1513,7 +1570,14 @@ class DummySimulation:
             self.contours[m][k:k + 1] = [length * f, length * (1.0 - f)]
         self.jids.append(jid)
         self.jx = np.vstack([self.jx, position])
+        length = float(np.linalg.norm(vector))          # the rod has the constant length min_distance
+        if length > 1e-12:
+            vector = vector * (self.min_distance / length)
+        else:
+            vector = np.array([0.0, 0.0, self.min_distance])
         self.jvec = np.vstack([self.jvec, vector])
+        self.jomega = np.vstack([self.jomega, np.zeros(3)])
+        self.jsign.append(float(side))
         self.jmols.append((seg_a[0], seg_b[0]))
 
     def _remove_junction(self, jid):
@@ -1527,6 +1591,8 @@ class DummySimulation:
         del self.jmols[r]
         self.jx = np.delete(self.jx, r, axis=0)
         self.jvec = np.delete(self.jvec, r, axis=0)
+        del self.jsign[r]
+        self.jomega = np.delete(self.jomega, r, axis=0)
 
     # --- intersection detection -----------------------------------------------------
     def _segment_pairs(self):
@@ -1635,8 +1701,17 @@ class DummySimulation:
                 continue
             if si[0] in used or sj[0] in used:
                 continue
-            self._add_junction(si, sj, 0.5 * (p[k] + q[k]), lines, (s[k], t[k]),
-                               q[k] - p[k])
+            # A = the grabbed strand, B = the other one (without a grabbed end: the first segment is A)
+            if self._is_grabbed(sj[0]) and not self._is_grabbed(si[0]):
+                sa, sb, pa, pb, da, db, fa, fb = sj, si, q[k], p[k], dj[k], di[k], t[k], s[k]
+            else:
+                sa, sb, pa, pb, da, db, fa, fb = si, sj, p[k], q[k], di[k], dj[k], s[k], t[k]
+            vector = pb - pa                                # initial v: closest point on A -> on B
+            cross = np.cross(da, db)                        # contact normal direction (not normalised)
+            side = 0.0
+            if np.linalg.norm(cross) > 1e-9 * np.linalg.norm(da) * np.linalg.norm(db):
+                side = float(np.sign(vector @ cross))       # 0 if v has no direction
+            self._add_junction(sa, sb, 0.5 * (p[k] + q[k]), lines, (fa, fb), vector, side)
             used.update((si[0], sj[0]))
         self._suppressed &= still_crossing  # separated pairs may form a junction again
 
@@ -1801,10 +1876,10 @@ def main(argv=None):
     center = np.zeros(3)
     volume_radius = 15.0    # radius of the spherical volume (r / R change it at run time)
     sphere_radius = 1.0     # radius of each bead
-    n_molecules = 3         # initial number of molecules; press 'a' to add more
+    n_molecules = 2         # initial number of molecules; press 'a' to add more
 
     # positions: (2 * n_molecules, 3) ordered [start, end, start, end, ...]; moleculeids: (n,) uint32
-    points, moleculeids = make_molecules(n_molecules, center, volume_radius, rng)
+    points, moleculeids = make_perpendicular_pair(center, volume_radius, START_GAP * MIN_DISTANCE)
 
     # ---- scene ----
     plotter = pv.Plotter(window_size=(1008, 800))
@@ -1838,6 +1913,7 @@ def main(argv=None):
         get_forces=sim.junction_forces,
         get_vectors=sim.junction_vectors,
         on_remove_junction=sim.remove_junction,
+        on_rotation_toggle=sim.set_rotation_enabled,
         on_drag=sim.set_surface_position,
         on_release=on_release,
         on_add_molecule=sim.add_molecule,
