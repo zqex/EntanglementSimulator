@@ -132,6 +132,7 @@ CONTOUR_STEP = 2.0              # contour length added/removed per press of Righ
 INITIAL_ZOOM = 1.6              # camera zoom when the window opens
 MAX_ROD_ANGLE = 0.5               # largest rotation (radians) of a junction rod in one step
 INSTANT_SWEEPS = 6              # fixed-point sweeps of the instantaneous rod dynamics per step
+DESTRUCTION_MODES = ("direction", "tension", "energy", "none")    # key b cycles through them
 ROTATION_MODES = ("none", "instantaneous", "damped")    # key v cycles through them
 START_GAP = 1.25                # initial distance between the two starting polymers, in units of min_distance
 MIN_DISTANCE = 1.0              # junctions form when two segments come closer than this; the two
@@ -310,8 +311,10 @@ Keys
                                   thickness shows the tension (junction spheres shown)
   Shift+1..9 (or Ctrl+1..9)       store the positions of all chain ends in slot 1..9
   1..9                            move all chain ends to the positions stored in the slot
-  b                               enable / disable the automatic destruction of entanglements
-                                  (v flips direction between two steps, or has zero length)
+  b                               cycle the automatic destruction of entanglements:
+                                  direction (v flips between two steps, or has zero length) ->
+                                  tension (the tension on the rod is zero or positive) ->
+                                  energy (E_flip > E_now, v -> -v) -> none
   v                               cycle the rotation dynamics of the junction rods v:
                                   none -> instantaneous -> damped relaxation -> none ...
   m / M                           start / stop recording a movie (movie00000.avi, ...)
@@ -413,8 +416,8 @@ class SphereDragger:
         self.dragged = None             # index of the chain end being dragged
         self.selected_junction = None   # index of the junction being held (left button down)
         self.on_rotation_toggle = on_rotation_toggle    # (mode: str) -> None
-        self.on_destruction_toggle = on_destruction_toggle  # (enabled: bool) -> None
-        self.destruction_enabled = True     # toggled with b: automatic destruction of entanglements
+        self.on_destruction_toggle = on_destruction_toggle  # (mode: str) -> None
+        self.destruction_mode = DESTRUCTION_MODES[0]    # cycled with b: "direction", "tension", "energy", "none"
         self.rotation_mode = ROTATION_MODES[-1]         # cycled with v: "none", "instantaneous", "damped"
         self.uniform_lines = False      # True after t: all lines thin and equally thick
         self._pending_zoom = initial_zoom   # applied on the first timer tick, after the window opened
@@ -1206,10 +1209,11 @@ class SphereDragger:
                 self.on_rotation_toggle(self.rotation_mode)
             print("Rod rotation dynamics:", self.rotation_mode)
         elif lower == "b":
-            self.destruction_enabled = not self.destruction_enabled    # b: destruction on / off
+            self.destruction_mode = DESTRUCTION_MODES[(DESTRUCTION_MODES.index(self.destruction_mode) + 1)
+                                                      % len(DESTRUCTION_MODES)]     # b: cycle
             if self.on_destruction_toggle is not None:
-                self.on_destruction_toggle(self.destruction_enabled)
-            print("Entanglement destruction:", "enabled" if self.destruction_enabled else "disabled")
+                self.on_destruction_toggle(self.destruction_mode)
+            print("Entanglement destruction:", self.destruction_mode)
         elif key == "m":
             self._start_movie()
         elif key == "M":
@@ -1329,11 +1333,26 @@ class DummySimulation:
     omega = rod_damping * omega - rod_rate * T (omega perpendicular to v), and v is rotated by
     omega about its axis (angle per step limited to MAX_ROD_ANGLE). The rod keeps its length and
     orientation (A -> B) by construction. Junctions are only removed by the user.
-    Destruction of entanglements (`set_destruction_enabled`, key b, default enabled): after each
-    update of the rods a junction is removed from both molecules if the direction of its v
-    flipped between two steps (v . v_previous < 0) or if v has zero length (in the instantaneous
-    mode: w = 0, so v has no direction). The pair cannot form a new junction until it is
-    further apart than min_distance.
+    Destruction of entanglements (`set_destruction_mode`, key b cycles through the modes): after
+    each update of the rods a junction is removed from both molecules, depending on the mode,
+      "direction" (default): the direction of its v flipped between two steps
+          (v . v_previous < 0) or v has zero length (in the instantaneous rotation mode: w = 0,
+          so v has no direction);
+      "tension": the tension on the rod is zero or positive. The strands pull the rod ends with
+          FA (at the A end) and FB (at the B end); the tension is 0.5 (FB - FA) . v / |v| (positive
+          when the ends are pulled apart, negative when the rod is compressed);
+      "energy": E_now is the spring energy of the four segments at the junction (sum of
+          0.5 k d^2, k = spring_constant / contour_length, on the shifted chains, see
+          `junction_energy`); E_flip is the same energy with v replaced by -v (A and B swap
+          sides, the strand kinks at P + 0.5 v and P - 0.5 v). The entanglement is destroyed if
+          E_flip > E_now;
+      "none": entanglements are only removed by the user.
+    The pair cannot form a new junction until it is further apart than min_distance.
+    Diagnostics: whenever an entanglement is created or destroyed a block of lines is printed:
+    the step number, who was involved (polymers A, B), what happened, the criterion applied
+    (distance or crossing when created; the rule and its numbers, the user, or a deleted polymer
+    when destroyed, plus the rotation dynamics and destruction rule in force) and the value of
+    the vector v. `verbose = False` switches the printing off.
     The rotation dynamics has three modes (`set_rotation_mode`, key v cycles through them):
     "none" (the rods keep their direction), "instantaneous" (every step each rod jumps to its
     equilibrium direction for the instantaneous forces (a few sweeps, as the forces depend on v): along w = 0.5 (FA - FB), the direction
@@ -1363,7 +1382,9 @@ class DummySimulation:
         self.proximity_distance = float(proximity_distance)
         self.force_tolerance = float(force_tolerance)   # forces smaller than this count as zero
         self.rotation_mode = ROTATION_MODES[-1]     # "none", "instantaneous" or "damped"
-        self.destruction_enabled = True             # destroy entanglements whose v flips / vanishes
+        self.destruction_mode = DESTRUCTION_MODES[0]    # "direction", "tension", "energy" or "none"
+        self.verbose = True             # print a diagnostic when entanglements are created / destroyed
+        self.step_count = 0
         self.rod_rate = float(rod_rate)             # angular mobility of the junction rods
         self.rod_damping = float(rod_damping)       # fraction of the angular velocity kept per step
         self.slip_rate = float(slip_rate)           # speed of contour length slipping across junctions
@@ -1438,18 +1459,71 @@ class DummySimulation:
             new = max(new, min(cl[k], self.min_contour_length))
         cl[k] = new
 
-    def remove_junction(self, row):
-        """The user removed junction number `row`: it disappears from BOTH molecules (each
-        loses the bend, contour lengths of the joined segments add up). The two molecules may
-        not form a junction again until they have stopped intersecting (else it reappears)."""
+    def _log(self, title, polymers, what, criterion, v):
+        """Diagnostic block about the creation / destruction of an entanglement, one item per line:
+        who was involved, what happened, the criterion applied, and the vector v."""
+        if self.verbose:
+            v = np.asarray(v, dtype=float)
+            print(f"[step {self.step_count}] {title}\n"
+                  f"    involved:  {polymers}\n"
+                  f"    what:      {what}\n"
+                  f"    criterion: {criterion}\n"
+                  f"    v = {np.round(v, 4).tolist()}  (|v| = {np.linalg.norm(v):.4g})")
+
+    def _modes(self):
+        return f"rotation dynamics: {self.rotation_mode}, destruction rule: {self.destruction_mode}"
+
+    def remove_junction(self, row, what="removed by the user",
+                        criterion="user action (hold the junction, key x)"):
+        """Junction number `row` is removed (by the user, or by the destruction rule that is
+        named in `criterion`; `what` says what happened): it disappears from BOTH molecules (each loses the bend, contour
+        lengths of the joined segments add up). The two molecules may not form a junction again
+        until they have stopped intersecting (else it reappears). A diagnostic line is printed."""
         jid, mols = self.jids[row], self.jmols[row]
+        self._log("ENTANGLEMENT DESTROYED", f"polymer A = {mols[0]}, polymer B = {mols[1]}", what,
+                  f"{criterion}; {self._modes()}", self.jvec[row])
         self._remove_junction(jid)
         self._suppressed.add(frozenset(mols))
         self._prev_sign = {}
 
-    def set_destruction_enabled(self, enabled):
-        """Switch the automatic destruction of entanglements (see `_update_vectors`) on or off."""
-        self.destruction_enabled = bool(enabled)
+    def set_destruction_mode(self, mode):
+        """Select the automatic destruction of entanglements: "direction", "tension", "energy"
+        or "none" (see the class docstring and `_update_vectors`)."""
+        if mode not in DESTRUCTION_MODES:
+            raise ValueError(f"destruction mode must be one of {DESTRUCTION_MODES}")
+        self.destruction_mode = mode
+
+    def junction_energy(self, r, lines=None, flipped=False):
+        """Spring energy 0.5 * k * d^2 of the four segments that meet at junction row r, with
+        every molecule drawn through its own shifted node (A at P - 0.5 v, B at P + 0.5 v).
+        With flipped=True the rod is reversed (v -> -v) for this junction only."""
+        lines = self._lines() if lines is None else lines
+        n = len(self.x)
+        if flipped:
+            self.jvec[r] = -self.jvec[r]
+        try:
+            energy = 0.0
+            for m in self.jmols[r]:
+                idx = lines[m]
+                k = idx.index(n + r)
+                P = self._chain_positions(m, idx)
+                cl = self.contours[m]
+                for a, b, length in ((k - 1, k, cl[k - 1]), (k, k + 1, cl[k])):
+                    d = P[b] - P[a]
+                    energy += 0.5 * self.spring_constant / length * float(d @ d)
+        finally:
+            if flipped:
+                self.jvec[r] = -self.jvec[r]
+        return energy
+
+    def rod_tensions(self):
+        """(J,) tension on each rod: 0.5 (FB - FA) . v / |v|; positive = the strands pull the two
+        rod ends apart, negative = the rod is compressed (0 if v has no length)."""
+        forces = self.junction_forces()
+        size = np.linalg.norm(self.jvec, axis=1) if len(self.jvec) else np.zeros(0)
+        safe = np.where(size > 1e-12, size, 1.0)
+        tension = 0.5 * ((forces[:, 1] - forces[:, 0]) * self.jvec).sum(axis=1) / safe
+        return np.where(size > 1e-12, tension, 0.0)
 
     def set_rotation_mode(self, mode):
         """Select the rotation dynamics of the junction rods: "none", "instantaneous" or
@@ -1470,14 +1544,35 @@ class DummySimulation:
         zero = set()                                    # rows where v has no length / direction
         if self.rotation_mode != "none":
             self._rotate_vectors(zero)
-        if self.destruction_enabled:
+        if self.destruction_mode != "none":
             doomed = []
+            if self.destruction_mode == "tension":
+                tension = self.rod_tensions()               # with the rods as they are now
+            if self.destruction_mode == "energy":
+                lines = self._lines()
             for r in range(len(self.jids)):
-                flipped = float(old[r] @ self.jvec[r]) < 0.0       # direction of v flipped
-                if flipped or r in zero or float(np.linalg.norm(self.jvec[r])) <= 1e-12:
-                    doomed.append(self.jids[r])
-            for jid in doomed:                          # the entanglement is destroyed
-                self.remove_junction(self.jids.index(jid))
+                reason = None
+                if self.destruction_mode == "direction":
+                    dot = float(old[r] @ self.jvec[r])
+                    if dot < 0.0:                                       # direction of v flipped
+                        reason = ("the direction of v flipped between two steps",
+                                  f"rule 'direction': v . v_previous = {dot:.4g} < 0; "
+                                  f"v_previous = {np.round(old[r], 4).tolist()}")
+                    elif r in zero or float(np.linalg.norm(self.jvec[r])) <= 1e-12:
+                        reason = ("v has zero length", "rule 'direction': |v| = 0")
+                elif self.destruction_mode == "energy":
+                    e_flip = self.junction_energy(r, lines, flipped=True)
+                    e_now = self.junction_energy(r, lines)
+                    if e_flip > e_now:
+                        reason = ("the flipped rod has the higher energy",
+                                  f"rule 'energy': E_flip = {e_flip:.6g} > E_now = {e_now:.6g}")
+                elif tension[r] >= -self.force_tolerance:               # zero or positive tension
+                    reason = ("the tension on the rod is zero or positive",
+                              f"rule 'tension': tension = {tension[r]:.4g} >= 0")
+                if reason is not None:
+                    doomed.append((self.jids[r], reason))
+            for jid, reason in doomed:                  # the entanglement is destroyed
+                self.remove_junction(self.jids.index(jid), *reason)
 
     def _rotate_vectors(self, zero):
         """Apply the selected rotation dynamics to all rods; `zero` collects the rows where the
@@ -1517,6 +1612,12 @@ class DummySimulation:
         Its junctions disappear; the other molecule at each of them loses that bend."""
         mol = int(self.moleculeids[first_index])
         for jid in list(self.chains.get(mol, [])):
+            r = self.jids.index(jid)
+            self._log("ENTANGLEMENT DESTROYED",
+                      f"polymer A = {self.jmols[r][0]}, polymer B = {self.jmols[r][1]}",
+                      f"polymer {mol} was deleted",
+                      f"user action (key d on a held end of polymer {mol}); {self._modes()}",
+                      self.jvec[r])
             self._remove_junction(jid)
         self.chains.pop(mol, None)
         self.contours.pop(mol, None)
@@ -1785,6 +1886,15 @@ class DummySimulation:
             if np.linalg.norm(cross) > 1e-9 * np.linalg.norm(da) * np.linalg.norm(db):
                 side = float(np.sign(vector @ cross))       # 0 if v has no direction
             self._add_junction(sa, sb, 0.5 * (p[k] + q[k]), lines, (fa, fb), vector, side)
+            how = (f"distance {dist[k]:.4g} < min_distance {self.min_distance:g}"
+                   if dist[k] < self.min_distance else
+                   f"the lines crossed (side flip, distance {dist[k]:.4g} < crossing_tolerance "
+                   f"{self.crossing_tolerance:g})")
+            self._log("ENTANGLEMENT CREATED",
+                      f"polymer A = {sa[0]} (grabbed: {self._is_grabbed(sa[0])}), polymer B = {sb[0]}",
+                      "a junction was formed; v = initial vector from the closest point on A "
+                      "to the closest point on B, rescaled to min_distance", f"{how}; {self._modes()}",
+                      self.jvec[-1])
             used.update((si[0], sj[0]))
         self._suppressed &= still_crossing  # separated pairs may form a junction again
 
@@ -1869,6 +1979,7 @@ class DummySimulation:
     def step(self):
         """Advance the 'simulation' and return an (n, 3) array of chain-end positions
         (junctions are fetched with `network()`)."""
+        self.step_count += 1
         lines = self._lines()
         if self.jids:
             nbr, kk, off = self._neighbors(lines)
@@ -1987,7 +2098,7 @@ def main(argv=None):
         get_vectors=sim.junction_vectors,
         on_remove_junction=sim.remove_junction,
         on_rotation_toggle=sim.set_rotation_mode,
-        on_destruction_toggle=sim.set_destruction_enabled,
+        on_destruction_toggle=sim.set_destruction_mode,
         on_drag=sim.set_surface_position,
         on_release=on_release,
         on_add_molecule=sim.add_molecule,
