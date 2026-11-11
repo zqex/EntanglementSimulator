@@ -29,10 +29,10 @@ two segments is stored with the junction as the initial v. A is the grabbed stra
 strand that is not grabbed (if neither or both are grabbed, A is the first segment found); v
 starts at the point on A and ends at the point on B. The kinks sit at P - 0.5 v (A) and
 P + 0.5 v (B); afterwards v is a rigid rod that evolves with damped dynamics opposite to the torque. It is drawn as a short arrow, orange if DP = 0.5 v . (FA - FB) < 0 and black if DP >= 0, parallel to the vector (pointing the same
-way) and centered on the junction (length JUNCTION_VECTOR_SCALE * |vector|, at least MIN_JUNCTION_VECTOR_LENGTH).
+way) and centered on the junction (length JUNCTION_VECTOR_SCALE * |vector| = twice |v|, at least MIN_JUNCTION_VECTOR_LENGTH).
 Contact dynamics (rigid rod): let A and B be the two molecules at a junction (A = the strand that was
 grabbed when the junction formed, B = the other). The junction vector v is a thin rigid rod of constant
-length min_distance that starts out pointing from the A connection point to the B connection point; its centre is the junction vertex P (the
+length rod_distance that starts out pointing from the A connection point to the B connection point; its centre is the junction vertex P (the
 centre of mass of the rod). The two A segments give a net force FA that attacks at P - 0.5 v, the
 two B segments a net force FB that attacks at P + 0.5 v. P moves under FA + FB as before. The rod
 turns under the net torque of the two forces, T = (-0.5 v) x FA + (0.5 v) x FB, and always
@@ -126,34 +126,46 @@ import numpy as np
 import pyvista as pv
 import vtk
 
-ACTIVE_COLOR = (0.0, 0.0, 0.0)  # highlight color while a sphere is being dragged
-
-CONTOUR_STEP = 2.0              # contour length added/removed per press of Right/Left arrow
-INITIAL_ZOOM = 1.6              # camera zoom when the window opens
-MAX_ROD_ANGLE = 0.5               # largest rotation (radians) of a junction rod in one step
-INSTANT_SWEEPS = 6              # fixed-point sweeps of the instantaneous rod dynamics per step
-DESTRUCTION_MODES = ("direction", "tension", "energy", "none")    # key b cycles through them
-ROTATION_MODES = ("none", "instantaneous", "damped")    # key v cycles through them
-START_GAP = 1.25                # initial distance between the two starting polymers, in units of min_distance
+# ---------------------------------------------------------------------------------------------
+# Physics / simulation constants
+# ---------------------------------------------------------------------------------------------
 MIN_DISTANCE = 1.0              # junctions form when two segments come closer than this; the two
                                 # chains of a junction are then held exactly this far apart
-PROXIMITY_DISTANCE = 2.0        # nearby (not joined) segments get a dotted line below this distance
+ROD_DISTANCE = 1.0              # length of the rod v (min_distance is the distance below which a junction forms)
+PROXIMITY_DISTANCE = 2.0        # nearby (not joined) segments are marked below this distance
+START_GAP = 1.25                # initial distance between the two starting polymers, in units of min_distance
+MIN_VOLUME_RADIUS = 5.0         # smallest radius of the spherical volume
+VOLUME_RADIUS_STEP = 1.0        # change of the volume radius per key press
+CONTOUR_STEP = 2.0              # contour length added/removed per press of Right/Left arrow
+DEFAULT_ROTATION_MODE = "axis"          # rotation dynamics of the rods at start (key v cycles)
+ROTATION_MODES = ("none", "instantaneous", "axis", "damped")    # key v cycles through them
+DEFAULT_DESTRUCTION_MODE = "none"       # destruction rule at start (key b cycles)
+DESTRUCTION_MODES = ("tension", "none")     # key b cycles through them
+MAX_ROD_ANGLE = 0.5             # largest rotation (radians) of a junction rod in one step
+INSTANT_SWEEPS = 1              # sweeps of the "instantaneous" / "axis" rod dynamics per step (the forces depend on v)
+ANGLE_MAX = 170.0               # v is not updated if the bend angle (degrees) of a strand is not below this (almost straight)
+FORCE_MIN = 0.05                # v is not updated if |FA| or |FB| is below this (when the FORCE_MIN rule is on)
+FORCE_MIN_RULE_DEFAULT = False  # the FORCE_MIN rule is off at start (key f toggles it)
+ANGLE_MAX_RULE_DEFAULT = True   # the ANGLE_MAX rule is on at start (key g toggles it)
+
+# ---------------------------------------------------------------------------------------------
+# Visualization constants
+# ---------------------------------------------------------------------------------------------
+INITIAL_ZOOM = 1.6              # camera zoom when the window opens
+ACTIVE_COLOR = (0.0, 0.0, 0.0)  # highlight color while a sphere is being dragged
 THIN_LINE_RADIUS = 0.05         # tube radius of all lines after pressing t
 TENSION_THICKNESS = 0.01        # tube radius of a segment per unit of spring tension
+MAX_LINE_RADIUS = 1.0           # thickest tube drawn (a very short segment has a huge tension)
 FORCE_ARROW_SCALE = 0.1         # length of a force arrow per unit of force
 FORCE_ARROW_WIDTH = 2.5         # width of the arrows with the force of one molecule at a junction
 NET_ARROW_WIDTH = 1.5           # width of the black arrow with the total force on a junction
 NET_ARROW_SCALE = 5.0 * FORCE_ARROW_SCALE   # the black total-force arrow is drawn 5 times longer
-JUNCTION_VECTOR_SCALE = 20.0    # length of the orange arrow per unit length of the stored vector
-MIN_JUNCTION_VECTOR_LENGTH = 5.0    # ... but never shorter than this, so it stays visible
-JUNCTION_VECTOR_WIDTH = 1.5     # width of the orange arrow
+JUNCTION_VECTOR_SCALE = 2.0     # length of the v arrow per unit length of the stored vector (twice v)
+MIN_JUNCTION_VECTOR_LENGTH = 0.0    # ... but never shorter than this (0: shown at exactly this scale)
+JUNCTION_VECTOR_WIDTH = 1.5     # width of the v arrow
 JUNCTION_VECTOR_COLOR = (1.0, 0.55, 0.0)    # orange: DP < 0
 JUNCTION_VECTOR_COLOR_POSITIVE = (0.0, 0.0, 0.0)    # black: DP >= 0
 DOT_SPACING = 0.2               # distance between the dots of the line between nearby segments
-MAX_LINE_RADIUS = 1.0           # thickest tube drawn (a very short segment has a huge tension)
-
-MIN_VOLUME_RADIUS = 5.0
-VOLUME_RADIUS_STEP = 1.0
 
 # Shift + digit produces a layout-specific symbol; which key name (and character) the window
 # system reports for it depends on the keyboard layout. The layout is detected from the
@@ -287,7 +299,7 @@ form a junction: both get a bend there, drawn as a small sphere in the average c
     spring energy, while the total contour length of a polymer stays constant.
   * At a junction the colored arrows are the net spring forces FA and FB of the two polymers on
     it (attacking the two rod ends, P -/+ 0.5 v), the long black arrow is their sum, and the orange (DP < 0) or black (DP >= 0, DP = 0.5 v . (FA - FB)) arrow is the vector v between the
-    two chains (|v| = min_distance). v is a rigid rod centred on the
+    two chains (|v| = rod_distance). v is a rigid rod centred on the
     junction; it rotates (damped) under the torque of the two net forces. A dotted black line joins nearby segments (closer than
     {PROXIMITY_DISTANCE:g}) that are not joined.
 
@@ -311,12 +323,20 @@ Keys
                                   thickness shows the tension (junction spheres shown)
   Shift+1..9 (or Ctrl+1..9)       store the positions of all chain ends in slot 1..9
   1..9                            move all chain ends to the positions stored in the slot
+  f                               toggle the FORCE_MIN rule: v is not updated if |FA| or |FB| is
+                                  below FORCE_MIN
+  g                               toggle the ANGLE_MAX rule: v is only updated if the bend angle of
+                                  both strands is below ANGLE_MAX (not almost straight)
+  i                               print the selected options (dynamics, destruction rule, display
+                                  mode, parameters)
+  w                               log v, w = 0.5 (FA - FB), |w|, FA, FB and the angles between the
+                                  strands of every junction to a file (lineppa_vw_<date>_<time>.log
+                                  in the working directory, every step, 5 decimals per component,
+                                  not to the terminal) / stop logging
   b                               cycle the automatic destruction of entanglements:
-                                  direction (v flips between two steps, or has zero length) ->
-                                  tension (the tension on the rod is zero or positive) ->
-                                  energy (E_flip > E_now, v -> -v) -> none
+                                  tension (the tension on the rod is zero or positive) -> none
   v                               cycle the rotation dynamics of the junction rods v:
-                                  none -> instantaneous -> damped relaxation -> none ...
+                                  none -> instantaneous -> axis -> damped relaxation -> none ...
   m / M                           start / stop recording a movie (movie00000.avi, ...)
   p                               save a PNG of the view (img00000.png, ...)
   s                               save all positions (conf00000.dump, ...)
@@ -355,7 +375,7 @@ class SphereDragger:
     CONF_PATTERN = re.compile(r"^conf(\d{5})\.dump$")
     MOVIE_PATTERN = re.compile(r"^movie(\d{5})\.avi$")
     # characters whose built-in VTK meaning (reset camera, surface mode, pick, ...) is suppressed
-    OWN_CHARS = frozenset("aAbBdDhHpPsSmMrRtTvVxX?123456789")
+    OWN_CHARS = frozenset("aAbBdDfFgGhHiIpPsSmMrRtTvVwWxX?123456789")
 
     def __init__(self, plotter, template, actors, positions, moleculeids,
                  center, radius, sphere_radius, recall_speed=0.5, movie_fps=30, rng=None,
@@ -365,7 +385,9 @@ class SphereDragger:
                  on_add_molecule=None, on_delete_molecule=None,
                  on_radius_change=None, on_ends_driven=None, on_ends_released=None,
                  on_contour_change=None, on_remove_junction=None, on_rotation_toggle=None,
-                 on_destruction_toggle=None, initial_zoom=INITIAL_ZOOM):
+                 on_destruction_toggle=None, on_print_toggle=None,
+                 get_options=None, on_force_min_toggle=None, on_angle_max_toggle=None,
+                 initial_zoom=INITIAL_ZOOM):
         self.plotter = plotter
         self.renderer = plotter.renderer
         self.template = template        # sphere mesh used for newly created beads
@@ -417,8 +439,16 @@ class SphereDragger:
         self.selected_junction = None   # index of the junction being held (left button down)
         self.on_rotation_toggle = on_rotation_toggle    # (mode: str) -> None
         self.on_destruction_toggle = on_destruction_toggle  # (mode: str) -> None
-        self.destruction_mode = DESTRUCTION_MODES[0]    # cycled with b: "direction", "tension", "energy", "none"
-        self.rotation_mode = ROTATION_MODES[-1]         # cycled with v: "none", "instantaneous", "damped"
+        self.on_print_toggle = on_print_toggle          # (enabled: bool) -> path of the log file or None
+        self.get_options = get_options  # () -> [(label, value), ...] settings of the simulation (key i)
+        self.on_force_min_toggle = on_force_min_toggle  # (enabled: bool) -> None (key f)
+        self.on_angle_max_toggle = on_angle_max_toggle  # (enabled: bool) -> None (key g)
+        self.force_min_rule = FORCE_MIN_RULE_DEFAULT    # v is not updated if |FA| or |FB| < FORCE_MIN
+        self.angle_max_rule = ANGLE_MAX_RULE_DEFAULT    # v is not updated if a strand is almost straight (>= ANGLE_MAX)
+        self.print_vw = False           # toggled with w: continuous logging of v, w and |w| to a file
+        self.vw_log_path = None
+        self.destruction_mode = DEFAULT_DESTRUCTION_MODE    # cycled with b: "tension", "none"
+        self.rotation_mode = DEFAULT_ROTATION_MODE         # cycled with v: "none", "instantaneous", "axis", "damped"
         self.uniform_lines = False      # True after t: all lines thin and equally thick
         self._pending_zoom = initial_zoom   # applied on the first timer tick, after the window opened
         self._side = 1                  # +1: dragged bead on the front (camera) side, -1: back
@@ -482,7 +512,7 @@ class SphereDragger:
 
         # Make sure PyVista's own key shortcuts for the keys we use don't also fire.
         for key in ("Up", "Down", "Left", "Right", "a", "d", "p", "s", "S", "m", "M",
-                    "r", "R", "t", "T", "v", "V", "b", "B", "x", "X", "h", "H", "question", *"123456789"):
+                    "r", "R", "t", "T", "v", "V", "b", "B", "f", "F", "g", "G", "i", "I", "w", "W", "x", "X", "h", "H", "question", *"123456789"):
             try:
                 plotter.clear_events_for_key(key)
             except Exception:
@@ -520,6 +550,23 @@ class SphereDragger:
             self.write_movie_frame()
         finally:
             self._in_tick = False
+
+    def _print_options(self):
+        """Key i: print the options that are selected now: viewer settings, then the settings
+        and parameters of the simulation (`get_options`)."""
+        n_chains = len(self.positions) // 2
+        rows = [("line display", "thin lines of equal radius (t)" if self.uniform_lines
+                 else "thickness shows the tension (T)"),
+                ("logging of v, w, |w| (w)", f"on, writing to {self.vw_log_path}" if self.print_vw else "off"),
+                ("keyboard layout", get_keyboard_layout()),
+                ("volume radius", f"{self.radius:g}"),
+                ("polymers / junctions", f"{n_chains} / {len(self.junction_positions)}")]
+        if self.get_options is not None:
+            rows += list(self.get_options())
+        width = max(len(label) for label, _ in rows)
+        print("Selected options:")
+        for label, value in rows:
+            print(f"  {label:<{width}} : {value}")
 
     # ------------------------------------------------------- simulation -> view
     def set_positions(self, positions):
@@ -1202,7 +1249,7 @@ class SphereDragger:
             self._pull_network()
             self.plotter.render()
         elif lower == "v":
-            # v: none -> instantaneous -> damped -> none ...
+            # v: none -> instantaneous -> axis -> damped -> none ...
             self.rotation_mode = ROTATION_MODES[(ROTATION_MODES.index(self.rotation_mode) + 1)
                                                 % len(ROTATION_MODES)]
             if self.on_rotation_toggle is not None:
@@ -1214,6 +1261,29 @@ class SphereDragger:
             if self.on_destruction_toggle is not None:
                 self.on_destruction_toggle(self.destruction_mode)
             print("Entanglement destruction:", self.destruction_mode)
+        elif lower == "f":
+            self.force_min_rule = not self.force_min_rule   # f: FORCE_MIN rule on / off
+            if self.on_force_min_toggle is not None:
+                self.on_force_min_toggle(self.force_min_rule)
+            print(f"FORCE_MIN rule (v not updated if |FA| or |FB| < {FORCE_MIN:g}):",
+                  "on" if self.force_min_rule else "off")
+        elif lower == "g":
+            self.angle_max_rule = not self.angle_max_rule   # g: ANGLE_MAX rule on / off
+            if self.on_angle_max_toggle is not None:
+                self.on_angle_max_toggle(self.angle_max_rule)
+            print(f"ANGLE_MAX rule (v not updated if a strand bend angle >= {ANGLE_MAX:g} deg):",
+                  "on" if self.angle_max_rule else "off")
+        elif lower == "i":
+            self._print_options()                           # i: print the selected options
+        elif lower == "w":
+            self.print_vw = not self.print_vw               # w: log v, w, FA, FB ... to a file
+            path = self.on_print_toggle(self.print_vw) if self.on_print_toggle is not None else None
+            self.vw_log_path = path if self.print_vw else None
+            if self.print_vw:
+                print("Logging of v, w, |w|, FA, FB and the strand angles: on, writing to",
+                      path or "(no simulation attached)")
+            else:
+                print("Logging of v, w, |w|, FA, FB and the strand angles: off")
         elif key == "m":
             self._start_movie()
         elif key == "M":
@@ -1324,7 +1394,7 @@ class DummySimulation:
     energies, slip, intersection and proximity detection) uses the chain's own shifted node
     positions; the junction position J itself moves under the sum of the forces of both chains.
 
-    Contact dynamics of v (rigid rod): v is a thin rigid rod of constant length min_distance from
+    Contact dynamics of v (rigid rod): v is a thin rigid rod of constant length rod_distance (ROD_DISTANCE) from
     the A connection point to the B connection point, centred on the junction position P (its
     centre of mass). FA and FB are the net spring forces of the two A segments and of the two
     B segments (see `junction_forces`); FA attacks at P - 0.5 v and FB at P + 0.5 v. P moves under
@@ -1335,29 +1405,37 @@ class DummySimulation:
     orientation (A -> B) by construction. Junctions are only removed by the user.
     Destruction of entanglements (`set_destruction_mode`, key b cycles through the modes): after
     each update of the rods a junction is removed from both molecules, depending on the mode,
-      "direction" (default): the direction of its v flipped between two steps
-          (v . v_previous < 0) or v has zero length (in the instantaneous rotation mode: w = 0,
-          so v has no direction);
       "tension": the tension on the rod is zero or positive. The strands pull the rod ends with
           FA (at the A end) and FB (at the B end); the tension is 0.5 (FB - FA) . v / |v| (positive
           when the ends are pulled apart, negative when the rod is compressed);
-      "energy": E_now is the spring energy of the four segments at the junction (sum of
-          0.5 k d^2, k = spring_constant / contour_length, on the shifted chains, see
-          `junction_energy`); E_flip is the same energy with v replaced by -v (A and B swap
-          sides, the strand kinks at P + 0.5 v and P - 0.5 v). The entanglement is destroyed if
-          E_flip > E_now;
-      "none": entanglements are only removed by the user.
+      "none" (default): entanglements are only removed by the user.
     The pair cannot form a new junction until it is further apart than min_distance.
+    While the log file is open, the creation / destruction blocks are also written to it, in the
+    same format as on the terminal.
+    Rules that freeze v (v is not updated, the previous v is kept; every rotation mode): the
+    FORCE_MIN rule (key f, `set_force_min_rule`): |FA| < FORCE_MIN or |FB| < FORCE_MIN; the
+    ANGLE_MAX rule (key g, `set_angle_max_rule`): the bend angle of strand A or of strand B at the
+    junction is >= ANGLE_MAX degrees (180 = straight), where the forces say little about v. The
+    ANGLE_MAX rule is on by default (ANGLE_MAX = 170 degrees), the FORCE_MIN rule is off.
+    Logging: with `print_vw` (key w, `set_print_vw`) a block per junction is written to the log
+    file lineppa_vw_<date>_<time>.log (not to the terminal) at every step with the
+    polymers A and B, v, w = 0.5 (FA - FB), |w|, FA, FB (and their lengths) and the angles
+    between the strands (angle between strands A and B, bend of each strand), each vector
+    component with 5 decimals.
     Diagnostics: whenever an entanglement is created or destroyed a block of lines is printed:
     the step number, who was involved (polymers A, B), what happened, the criterion applied
     (distance or crossing when created; the rule and its numbers, the user, or a deleted polymer
     when destroyed, plus the rotation dynamics and destruction rule in force) and the value of
-    the vector v. `verbose = False` switches the printing off.
-    The rotation dynamics has three modes (`set_rotation_mode`, key v cycles through them):
+    the vector v, the forces FA and FB and the bend angles of the strands (and the angle between
+    them) at that moment. `verbose = False` switches the printing off.
+    The rotation dynamics has four modes (`set_rotation_mode`, key v cycles through them):
     "none" (the rods keep their direction), "instantaneous" (every step each rod jumps to its
     equilibrium direction for the instantaneous forces (a few sweeps, as the forces depend on v): along w = 0.5 (FA - FB), the direction
     in which the torque vanishes and the damped dynamics comes to rest; the rod is unchanged
-    if w is zero) and "damped" (the relaxation described above, the default).
+    if w is zero), "axis" (like "instantaneous", but v is set to +w or -w (w = 0.5 (FA - FB)), whichever is
+    parallel to the previous v (positive dot product), normalised to rod_distance: only the axis
+    of w is used and the orientation of v is kept; if |FA| or |FB| < FORCE_MIN (0.05) the previous v is kept) and "damped" (the
+    relaxation described above). The default is "axis" (DEFAULT_ROTATION_MODE).
     As after a removal by the user, the two molecules cannot form a new junction until they
     are further apart than min_distance.
 
@@ -1369,7 +1447,7 @@ class DummySimulation:
                  spring_rate=0.02, min_distance=MIN_DISTANCE, crossing_tolerance=2.0,
                  min_contour_length=0.5, spring_constant=30.0,
                  proximity_distance=PROXIMITY_DISTANCE, slip_rate=0.02, force_tolerance=1e-9,
-                 rod_rate=0.01, rod_damping=0.8):
+                 rod_rate=0.01, rod_damping=0.8, rod_distance=ROD_DISTANCE):
         self.x = np.array(positions, dtype=float).reshape(-1, 3)   # chain ends (n, 3)
         self.moleculeids = np.array(moleculeids, dtype=np.uint32)
         self.center = np.asarray(center, dtype=float)
@@ -1381,15 +1459,21 @@ class DummySimulation:
         self.spring_constant = float(spring_constant)   # segment spring constant = this / contour length
         self.proximity_distance = float(proximity_distance)
         self.force_tolerance = float(force_tolerance)   # forces smaller than this count as zero
-        self.rotation_mode = ROTATION_MODES[-1]     # "none", "instantaneous" or "damped"
-        self.destruction_mode = DESTRUCTION_MODES[0]    # "direction", "tension", "energy" or "none"
+        self.rotation_mode = DEFAULT_ROTATION_MODE     # "none", "instantaneous", "axis" or "damped"
+        self.force_min_rule = FORCE_MIN_RULE_DEFAULT    # v is not updated if |FA| or |FB| < FORCE_MIN (key f)
+        self.angle_max_rule = ANGLE_MAX_RULE_DEFAULT    # v is not updated if a strand bend angle >= ANGLE_MAX (key g)
+        self.destruction_mode = DEFAULT_DESTRUCTION_MODE    # "tension" or "none"
+        self.print_vw = False           # log v, w, FA, FB ... of every junction at every step to a file
+        self.vw_log_path = None         # the log file of the w key (None: not logging)
+        self._vw_log = None
         self.verbose = True             # print a diagnostic when entanglements are created / destroyed
         self.step_count = 0
         self.rod_rate = float(rod_rate)             # angular mobility of the junction rods
         self.rod_damping = float(rod_damping)       # fraction of the angular velocity kept per step
         self.slip_rate = float(slip_rate)           # speed of contour length slipping across junctions
         self.near = []                  # [(molecule_a, molecule_b, point_a, point_b)]
-        self.min_distance = float(min_distance)     # junctions form below this distance; |v| = this
+        self.min_distance = float(min_distance)     # junctions form below this distance
+        self.rod_distance = float(rod_distance)     # |v|: the length of the rigid rod
         self.crossing_tolerance = float(crossing_tolerance)
         self.held = set()               # beads currently controlled by the viewer
 
@@ -1459,16 +1543,31 @@ class DummySimulation:
             new = max(new, min(cl[k], self.min_contour_length))
         cl[k] = new
 
-    def _log(self, title, polymers, what, criterion, v):
+    def _state_lines(self, r):
+        """Lines "FA", "FB" and "angle" for junction row r (used by the creation / destruction
+        blocks): the forces of the two strands and the angles between / the bends of the strands."""
+        forces = self.junction_forces()
+        between, bend_a, bend_b = self.strand_angles(r)
+        fmt = lambda x: "[" + ", ".join(f"{c:.5f}" for c in x) + "]"
+        deg = lambda a: "n/a" if a is None else f"{a:.3f} deg"
+        return (f"\n    FA = {fmt(forces[r, 0])}  |FA| = {np.linalg.norm(forces[r, 0]):.5f}"
+                f"\n    FB = {fmt(forces[r, 1])}  |FB| = {np.linalg.norm(forces[r, 1]):.5f}"
+                f"\n    bend angle: A = {deg(bend_a)}, B = {deg(bend_b)} (180 deg = straight); "
+                f"angle between strands A and B = {deg(between)}")
+
+    def _log(self, title, polymers, what, criterion, v, state=""):
         """Diagnostic block about the creation / destruction of an entanglement, one item per line:
         who was involved, what happened, the criterion applied, and the vector v."""
         if self.verbose:
             v = np.asarray(v, dtype=float)
-            print(f"[step {self.step_count}] {title}\n"
-                  f"    involved:  {polymers}\n"
-                  f"    what:      {what}\n"
-                  f"    criterion: {criterion}\n"
-                  f"    v = {np.round(v, 4).tolist()}  (|v| = {np.linalg.norm(v):.4g})")
+            text = (f"[step {self.step_count}] {title}\n"
+                    f"    involved:  {polymers}\n"
+                    f"    what:      {what}\n"
+                    f"    criterion: {criterion}\n"
+                    f"    v = {np.round(v, 4).tolist()}  (|v| = {np.linalg.norm(v):.4g})" + state)
+            print(text)                                 # to the terminal ...
+            if self._vw_log is not None:                # ... and, in the same format, to the log file
+                self._vw_log.write(text + "\n")
 
     def _modes(self):
         return f"rotation dynamics: {self.rotation_mode}, destruction rule: {self.destruction_mode}"
@@ -1481,40 +1580,107 @@ class DummySimulation:
         until they have stopped intersecting (else it reappears). A diagnostic line is printed."""
         jid, mols = self.jids[row], self.jmols[row]
         self._log("ENTANGLEMENT DESTROYED", f"polymer A = {mols[0]}, polymer B = {mols[1]}", what,
-                  f"{criterion}; {self._modes()}", self.jvec[row])
+                  f"{criterion}; {self._modes()}", self.jvec[row], self._state_lines(row))
         self._remove_junction(jid)
         self._suppressed.add(frozenset(mols))
         self._prev_sign = {}
 
+    def options(self):
+        """[(label, value)] with the selected dynamics, destruction rule and parameters (key i)."""
+        return [("rotation dynamics (v)", self.rotation_mode),
+                ("destruction rule (b)", self.destruction_mode),
+                ("diagnostics on creation / destruction", "on" if self.verbose else "off"),
+                ("min_distance (junction forms below)", f"{self.min_distance:g}"),
+                ("rod_distance (length of v)", f"{self.rod_distance:g}"),
+                ("proximity_distance", f"{self.proximity_distance:g}"),
+                ("crossing_tolerance", f"{self.crossing_tolerance:g}"),
+                ("spring_constant", f"{self.spring_constant:g}"),
+                ("spring_rate", f"{self.spring_rate:g}"),
+                ("slip_rate", f"{self.slip_rate:g}"),
+                ("min_contour_length", f"{self.min_contour_length:g}"),
+                ("rod_rate / rod_damping", f"{self.rod_rate:g} / {self.rod_damping:g}"),
+                ("FORCE_MIN rule (f): v frozen if |FA| or |FB| <", f"{FORCE_MIN:g}, {'on' if self.force_min_rule else 'off'}"),
+                ("ANGLE_MAX rule (g): v frozen if a bend >=", f"{ANGLE_MAX:g} deg, {'on' if self.angle_max_rule else 'off'}"),
+                ("INSTANT_SWEEPS", f"{INSTANT_SWEEPS}"),
+                ("substeps per step", f"{self.substeps}")]
+
+    def set_force_min_rule(self, enabled):
+        """Switch the FORCE_MIN rule on or off: v is not updated if |FA| or |FB| < FORCE_MIN."""
+        self.force_min_rule = bool(enabled)
+
+    def set_angle_max_rule(self, enabled):
+        """Switch the ANGLE_MAX rule on or off: v is only updated if the bend angle of both
+        strands is below ANGLE_MAX degrees (the strands are not almost straight)."""
+        self.angle_max_rule = bool(enabled)
+
+    def set_print_vw(self, enabled):
+        """Switch the continuous logging of v, w = 0.5 (FA - FB), |w|, FA, FB and the strand
+        angles on or off. The data is written to a new log file (named lineppa_vw_<date>_<time>.log,
+        in the working directory), not to the terminal. Returns the path of the file (None when
+        switched off)."""
+        self.print_vw = bool(enabled)
+        if self._vw_log is not None:                    # close the file of the previous recording
+            self._vw_log.close()
+            self._vw_log = None
+        if not self.print_vw:
+            return None
+        self.vw_log_path = os.path.abspath(time.strftime("lineppa_vw_%Y%m%d_%H%M%S.log"))
+        self._vw_log = open(self.vw_log_path, "w", buffering=1)      # line buffered
+        self._vw_log.write("# lineppa log of v, w = 0.5 (FA - FB), |w|, FA, FB and the strand angles\n"
+                           f"# {self._modes()}\n")
+        return self.vw_log_path
+
+    def strand_angles(self, r, lines=None):
+        """Angles (degrees) at junction row r, on the drawn rod geometry (strands through
+        P - 0.5 v for A and P + 0.5 v for B): (angle between the strands A and B, bend of strand
+        A, bend of strand B). The angle between the strands is the angle between their directions
+        at the junction (previous node -> next node of each chain), folded into 0..90 (the
+        angle between two lines); the bend of a strand is the angle between its two segments at
+        the kink, i.e. 180 for a straight strand. None for an undefined (zero) direction."""
+        lines = self._lines() if lines is None else lines
+        n = len(self.x)
+        tangents, bends = [], []
+        for m in self.jmols[r]:
+            idx = lines[m]
+            k = idx.index(n + r)
+            P = self._chain_positions(m, idx)
+            tangents.append(P[k + 1] - P[k - 1])
+            a, b = P[k - 1] - P[k], P[k + 1] - P[k]
+            na, nb = np.linalg.norm(a), np.linalg.norm(b)
+            bends.append(float(np.degrees(np.arccos(np.clip(a @ b / (na * nb), -1, 1))))
+                         if na > 1e-12 and nb > 1e-12 else None)
+        nt = [np.linalg.norm(t) for t in tangents]
+        between = None
+        if min(nt) > 1e-12:
+            ang = float(np.degrees(np.arccos(np.clip(tangents[0] @ tangents[1] / (nt[0] * nt[1]), -1, 1))))
+            between = min(ang, 180.0 - ang)
+        return between, bends[0], bends[1]
+
+    def _print_vectors(self):
+        """Write to the log file (key w), one block per junction: step, polymers A / B, v, w, |w|,
+        the forces FA and FB and the angles between the strands (5 decimals per component)."""
+        if self._vw_log is None:
+            return
+        forces = self.junction_forces()
+        lines = self._lines()
+        fmt = lambda x: "[" + ", ".join(f"{c:.5f}" for c in x) + "]"
+        deg = lambda a: "n/a" if a is None else f"{a:.3f} deg"
+        for r in range(len(self.jids)):
+            w = 0.5 * (forces[r, 0] - forces[r, 1])
+            between, bend_a, bend_b = self.strand_angles(r, lines)
+            self._vw_log.write(f"[step {self.step_count}] A={self.jmols[r][0]} B={self.jmols[r][1]}\n"
+                  f"    v = {fmt(self.jvec[r])}  w = {fmt(w)}  |w| = {np.linalg.norm(w):.5f}\n"
+                  f"    FA = {fmt(forces[r, 0])}  |FA| = {np.linalg.norm(forces[r, 0]):.5f}\n"
+                  f"    FB = {fmt(forces[r, 1])}  |FB| = {np.linalg.norm(forces[r, 1]):.5f}\n"
+                  f"    angle between strands A and B = {deg(between)}  "
+                  f"(bend of A = {deg(bend_a)}, bend of B = {deg(bend_b)}; 180 deg = straight)\n")
+
     def set_destruction_mode(self, mode):
-        """Select the automatic destruction of entanglements: "direction", "tension", "energy"
-        or "none" (see the class docstring and `_update_vectors`)."""
+        """Select the automatic destruction of entanglements: "tension" or "none"
+        (see the class docstring and `_destroy_entanglements`)."""
         if mode not in DESTRUCTION_MODES:
             raise ValueError(f"destruction mode must be one of {DESTRUCTION_MODES}")
         self.destruction_mode = mode
-
-    def junction_energy(self, r, lines=None, flipped=False):
-        """Spring energy 0.5 * k * d^2 of the four segments that meet at junction row r, with
-        every molecule drawn through its own shifted node (A at P - 0.5 v, B at P + 0.5 v).
-        With flipped=True the rod is reversed (v -> -v) for this junction only."""
-        lines = self._lines() if lines is None else lines
-        n = len(self.x)
-        if flipped:
-            self.jvec[r] = -self.jvec[r]
-        try:
-            energy = 0.0
-            for m in self.jmols[r]:
-                idx = lines[m]
-                k = idx.index(n + r)
-                P = self._chain_positions(m, idx)
-                cl = self.contours[m]
-                for a, b, length in ((k - 1, k, cl[k - 1]), (k, k + 1, cl[k])):
-                    d = P[b] - P[a]
-                    energy += 0.5 * self.spring_constant / length * float(d @ d)
-        finally:
-            if flipped:
-                self.jvec[r] = -self.jvec[r]
-        return energy
 
     def rod_tensions(self):
         """(J,) tension on each rod: 0.5 (FB - FA) . v / |v|; positive = the strands pull the two
@@ -1526,8 +1692,8 @@ class DummySimulation:
         return np.where(size > 1e-12, tension, 0.0)
 
     def set_rotation_mode(self, mode):
-        """Select the rotation dynamics of the junction rods: "none", "instantaneous" or
-        "damped" (angular velocities are reset)."""
+        """Select the rotation dynamics of the junction rods: "none", "instantaneous", "axis"
+        or "damped" (angular velocities are reset)."""
         if mode not in ROTATION_MODES:
             raise ValueError(f"rotation mode must be one of {ROTATION_MODES}")
         self.rotation_mode = mode
@@ -1535,63 +1701,74 @@ class DummySimulation:
 
     def _update_vectors(self):
         """Rigid-rod dynamics of the junction vectors (see the class docstring): the rod v of
-        length min_distance carries FA at -0.5 v and FB at +0.5 v and turns, damped, opposite the
+        length rod_distance carries FA at -0.5 v and FB at +0.5 v and turns, damped, opposite the
         torque T = 0.5 v x (FB - FA). In the mode "instantaneous" the rod jumps to its equilibrium
-        direction along w = 0.5 (FA - FB); in the mode "none" nothing happens."""
+        direction along w = 0.5 (FA - FB); in the mode "axis" it jumps to +w or -w, whichever is
+        parallel to the previous v; in the mode "none" nothing happens. Then the destruction rule
+        is applied (`_destroy_entanglements`)."""
         if not self.jids:
             return
-        old = self.jvec.copy()
-        zero = set()                                    # rows where v has no length / direction
         if self.rotation_mode != "none":
-            self._rotate_vectors(zero)
-        if self.destruction_mode != "none":
-            doomed = []
-            if self.destruction_mode == "tension":
-                tension = self.rod_tensions()               # with the rods as they are now
-            if self.destruction_mode == "energy":
-                lines = self._lines()
-            for r in range(len(self.jids)):
-                reason = None
-                if self.destruction_mode == "direction":
-                    dot = float(old[r] @ self.jvec[r])
-                    if dot < 0.0:                                       # direction of v flipped
-                        reason = ("the direction of v flipped between two steps",
-                                  f"rule 'direction': v . v_previous = {dot:.4g} < 0; "
-                                  f"v_previous = {np.round(old[r], 4).tolist()}")
-                    elif r in zero or float(np.linalg.norm(self.jvec[r])) <= 1e-12:
-                        reason = ("v has zero length", "rule 'direction': |v| = 0")
-                elif self.destruction_mode == "energy":
-                    e_flip = self.junction_energy(r, lines, flipped=True)
-                    e_now = self.junction_energy(r, lines)
-                    if e_flip > e_now:
-                        reason = ("the flipped rod has the higher energy",
-                                  f"rule 'energy': E_flip = {e_flip:.6g} > E_now = {e_now:.6g}")
-                elif tension[r] >= -self.force_tolerance:               # zero or positive tension
-                    reason = ("the tension on the rod is zero or positive",
-                              f"rule 'tension': tension = {tension[r]:.4g} >= 0")
-                if reason is not None:
-                    doomed.append((self.jids[r], reason))
+            self._rotate_vectors()
+        if self.print_vw:                               # v after the rotation, w for that v
+            self._print_vectors()
+        self._destroy_entanglements()
+
+    def _destroy_entanglements(self):
+        """Apply the destruction rule (mode "tension"; "none" does nothing) to all junctions.
+        Removing or adding a junction changes the forces of its neighbours (their neighbour nodes
+        and contour lengths), so the rule is applied again to the remaining junctions until none
+        is destroyed."""
+        if self.destruction_mode == "none":
+            return
+        for _ in range(len(self.jids) + 1):
+            tension = self.rod_tensions()               # with the rods and forces as they are now
+            doomed = [(jid, ("the tension on the rod is zero or positive",
+                             f"rule 'tension': tension = {tension[r]:.4g} >= 0"))
+                      for r, jid in enumerate(self.jids) if tension[r] >= -self.force_tolerance]
+            if not doomed:
+                return
             for jid, reason in doomed:                  # the entanglement is destroyed
                 self.remove_junction(self.jids.index(jid), *reason)
 
-    def _rotate_vectors(self, zero):
-        """Apply the selected rotation dynamics to all rods; `zero` collects the rows where the
-        rod would have zero length (instantaneous mode with w = 0)."""
+    def _rotate_vectors(self):
+        """Apply the selected rotation dynamics to all rods. In every mode, v is NOT
+        updated for a junction where |FA| < FORCE_MIN or |FB| < FORCE_MIN (the FORCE_MIN rule,
+        key f), or where a strand has a bend angle >= ANGLE_MAX, i.e. is almost straight (the
+        ANGLE_MAX rule, key g): the previous v is kept."""
         forces = self.junction_forces()
-        if self.rotation_mode == "instantaneous":
+        lines = self._lines() if self.angle_max_rule else None
+
+        def weak(f, r):         # True: v of junction row r is not updated
+            if self.force_min_rule and (float(np.linalg.norm(f[r, 0])) < FORCE_MIN
+                                        or float(np.linalg.norm(f[r, 1])) < FORCE_MIN):
+                return True
+            if self.angle_max_rule:                     # a strand that is (almost) straight: no update
+                _, bend_a, bend_b = self.strand_angles(r, lines)
+                if bend_a is None or bend_b is None or bend_a >= ANGLE_MAX or bend_b >= ANGLE_MAX:
+                    return True
+            return False
+        if self.rotation_mode in ("instantaneous", "axis"):
+            previous = self.jvec.copy()             # "axis": the orientation is kept relative to this
             for sweep in range(INSTANT_SWEEPS):     # the forces depend on v: iterate to self-consistency
                 if sweep:
                     forces = self.junction_forces()
                 for r in range(len(self.jids)):
+                    if weak(forces, r):
+                        continue                        # |FA| or |FB| < FORCE_MIN: v is not updated
                     w = 0.5 * (forces[r, 0] - forces[r, 1])
                     size = float(np.linalg.norm(w))
                     if size > self.force_tolerance:
-                        self.jvec[r] = self.min_distance * w / size
-                        zero.discard(r)
-                    else:
-                        zero.add(r)                     # w = 0: v has no length / direction
+                        direction = w / size
+                        if self.rotation_mode == "axis" and float(direction @ previous[r]) < 0.0:
+                            direction = -direction      # -0.5 (FA - FB): the one parallel to the previous v
+                        self.jvec[r] = self.rod_distance * direction
+                    # w = 0: the previous v is kept
             return
         for r in range(len(self.jids)):
+            if weak(forces, r):                             # |FA| or |FB| < FORCE_MIN: v is not updated
+                self.jomega[r] = 0.0
+                continue
             v = self.jvec[r]
             torque = 0.5 * np.cross(v, forces[r, 1] - forces[r, 0])
             omega = self.rod_damping * self.jomega[r] - self.rod_rate * torque   # opposite the torque
@@ -1604,7 +1781,7 @@ class DummySimulation:
             if angle > 1e-12:                               # Rodrigues rotation of v about omega
                 k = omega / angle
                 v = v * np.cos(angle) + np.cross(k, v) * np.sin(angle)
-                v = v * (self.min_distance / np.linalg.norm(v))
+                v = v * (self.rod_distance / np.linalg.norm(v))
                 self.jvec[r] = v
 
     def delete_molecule(self, first_index, count):
@@ -1617,7 +1794,7 @@ class DummySimulation:
                       f"polymer A = {self.jmols[r][0]}, polymer B = {self.jmols[r][1]}",
                       f"polymer {mol} was deleted",
                       f"user action (key d on a held end of polymer {mol}); {self._modes()}",
-                      self.jvec[r])
+                      self.jvec[r], self._state_lines(r))
             self._remove_junction(jid)
         self.chains.pop(mol, None)
         self.contours.pop(mol, None)
@@ -1744,11 +1921,11 @@ class DummySimulation:
             self.contours[m][k:k + 1] = [length * f, length * (1.0 - f)]
         self.jids.append(jid)
         self.jx = np.vstack([self.jx, position])
-        length = float(np.linalg.norm(vector))          # the rod has the constant length min_distance
+        length = float(np.linalg.norm(vector))          # the rod has the constant length rod_distance
         if length > 1e-12:
-            vector = vector * (self.min_distance / length)
+            vector = vector * (self.rod_distance / length)
         else:
-            vector = np.array([0.0, 0.0, self.min_distance])
+            vector = np.array([0.0, 0.0, self.rod_distance])
         self.jvec = np.vstack([self.jvec, vector])
         self.jomega = np.vstack([self.jomega, np.zeros(3)])
         self.jsign.append(float(side))
@@ -1893,8 +2070,8 @@ class DummySimulation:
             self._log("ENTANGLEMENT CREATED",
                       f"polymer A = {sa[0]} (grabbed: {self._is_grabbed(sa[0])}), polymer B = {sb[0]}",
                       "a junction was formed; v = initial vector from the closest point on A "
-                      "to the closest point on B, rescaled to min_distance", f"{how}; {self._modes()}",
-                      self.jvec[-1])
+                      "to the closest point on B, rescaled to rod_distance", f"{how}; {self._modes()}",
+                      self.jvec[-1], self._state_lines(len(self.jids) - 1))
             used.update((si[0], sj[0]))
         self._suppressed &= still_crossing  # separated pairs may form a junction again
 
@@ -2002,6 +2179,8 @@ class DummySimulation:
                 fraction = (1.0 - np.exp(-self.spring_rate * ksum))[:, None]
         self._update_vectors()
         self._detect_crossings()
+        if self.jids:       # new junctions and the changed neighbours of new / removed ones are checked too
+            self._destroy_entanglements()
         self._update_proximity()
         return self.x
 
@@ -2099,6 +2278,10 @@ def main(argv=None):
         on_remove_junction=sim.remove_junction,
         on_rotation_toggle=sim.set_rotation_mode,
         on_destruction_toggle=sim.set_destruction_mode,
+        on_print_toggle=sim.set_print_vw,
+        get_options=sim.options,
+        on_force_min_toggle=sim.set_force_min_rule,
+        on_angle_max_toggle=sim.set_angle_max_rule,
         on_drag=sim.set_surface_position,
         on_release=on_release,
         on_add_molecule=sim.add_molecule,
