@@ -28,8 +28,9 @@ that they act like one big thick rod of particles. Computationally simple, but a
 
 * Cylinder based descriptions: Replace the straight rod like sections of beads with a single cylinder
 with radial WCA interactions. When two cylinders touch, kinks (aka WCA beads) are dynamically introduced to
-represent the entanglement. Neighboring beads on the same chain has an attractive FENE like potential
-within a contour length of 1.5 so they tend to aggregate as bead segments at entanglements. Kinks/beads are dynamically
+represent the entanglement. Neighboring beads on the same chain have an attractive FENE like potential
+within a contour length of 1.5. This means they tend to aggregate at entanglements as bead segments
+ensuring a potential barrier preserving entanglements. Kinks/beads are dynamically
 removed when 1) it does not interact with beads on other chains, 2) if it is only the outermost beads
 in a segment of intramolecular beads, 3) the resulting straight line does not cause entanglement creation.
 Computationally we get rid of all the dummy beads in the straight sections, but dynamically retain a
@@ -83,7 +84,7 @@ of closest approach of what would be the beads in a beadppa.
 
 ** todo ** : No support for cross-links or handling collisions between entanglements.
 
-## cylinderppa.py  Finite zise cylinder mesh model
+## cylinderppa.py  Finite size cylinder mesh model
 
 ![Screenshot of lineppa.py.](cylppa.png)
 
