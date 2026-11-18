@@ -101,7 +101,7 @@ Keyboard
 All files are written to the current folder; numbering continues after existing files.
 
 Data flow
-    simulation (LAMMPS)  --positions-->  viewer      (timer, every ~30 ms)
+    simulation           --positions-->  viewer      (timer, every ~30 ms)
     viewer (user input)  --callbacks-->  simulation  (see SphereDragger.__init__)
 
 Bead ordering: molecule by molecule, each as [start, end]; the junctions are not beads
@@ -131,7 +131,7 @@ import vtk
 # ---------------------------------------------------------------------------------------------
 MIN_DISTANCE = 1.0              # junctions form when two segments come closer than this; the two
                                 # chains of a junction are then held exactly this far apart
-ROD_DISTANCE = 1.0              # length of the rod v (min_distance is the distance below which a junction forms)
+ROD_DISTANCE = 1.1              # length of the rod v (min_distance is the distance below which a junction forms)
 PROXIMITY_DISTANCE = 2.0        # nearby (not joined) segments are marked below this distance
 START_GAP = 1.25                # initial distance between the two starting polymers, in units of min_distance
 MIN_VOLUME_RADIUS = 5.0         # smallest radius of the spherical volume
@@ -141,7 +141,6 @@ DEFAULT_ROTATION_MODE = "axis"          # rotation dynamics of the rods at start
 ROTATION_MODES = ("none", "instantaneous", "axis", "damped")    # key v cycles through them
 DEFAULT_DESTRUCTION_MODE = "none"       # destruction rule at start (key b cycles)
 DESTRUCTION_MODES = ("tension", "none")     # key b cycles through them
-MAX_ROD_ANGLE = 0.5             # largest rotation (radians) of a junction rod in one step
 INSTANT_SWEEPS = 1              # sweeps of the "instantaneous" / "axis" rod dynamics per step (the forces depend on v)
 ANGLE_MAX = 170.0               # v is not updated if the bend angle (degrees) of a strand is not below this (almost straight)
 FORCE_MIN = 0.05                # v is not updated if |FA| or |FB| is below this (when the FORCE_MIN rule is on)
@@ -570,7 +569,7 @@ class SphereDragger:
 
     # ------------------------------------------------------- simulation -> view
     def set_positions(self, positions):
-        """Update all bead positions (e.g. from LAMMPS). Beads held by the user or moved
+        """Update all bead positions. Beads held by the user or moved
         by a recall animation keep their viewer-controlled positions."""
         positions = np.asarray(positions, dtype=float).reshape(-1, 3)
         if len(positions) != len(self.actors):
@@ -1351,7 +1350,7 @@ def make_perpendicular_pair(center, radius, gap):
 
 
 # --------------------------------------------------------------------------
-# Stand-in for the simulation. Replace with your LAMMPS wrapper (see below).
+# Stand-in for the simulation.
 # --------------------------------------------------------------------------
 class DummySimulation:
     """Toy dynamics, no randomness.
@@ -1401,7 +1400,7 @@ class DummySimulation:
     FA + FB as before. The torque on the rod is T = (-0.5 v) x FA + (0.5 v) x FB = 0.5 v x (FB - FA).
     The rod always moves opposite to T, with damping: per step
     omega = rod_damping * omega - rod_rate * T (omega perpendicular to v), and v is rotated by
-    omega about its axis (angle per step limited to MAX_ROD_ANGLE). The rod keeps its length and
+    omega about its axis. The rod keeps its length and
     orientation (A -> B) by construction. Junctions are only removed by the user.
     Destruction of entanglements (`set_destruction_mode`, key b cycles through the modes): after
     each update of the rods a junction is removed from both molecules, depending on the mode,
@@ -1774,9 +1773,6 @@ class DummySimulation:
             omega = self.rod_damping * self.jomega[r] - self.rod_rate * torque   # opposite the torque
             omega = omega - (omega @ v) / (v @ v) * v      # only rotation that turns the rod
             angle = float(np.linalg.norm(omega))
-            if angle > MAX_ROD_ANGLE:
-                omega *= MAX_ROD_ANGLE / angle
-                angle = MAX_ROD_ANGLE
             self.jomega[r] = omega
             if angle > 1e-12:                               # Rodrigues rotation of v about omega
                 k = omega / angle
@@ -2192,44 +2188,6 @@ class DummySimulation:
         return float(dist[other].min()) if other.any() else np.inf
 
 
-# Example of the same interface on top of the LAMMPS Python API.
-# Creating/deleting molecules changes the atom count and shifts viewer indices, so keep a
-# list `self.ids` (viewer index -> LAMMPS atom id) instead of assuming index == id - 1.
-# Each molecule is two atoms joined by one bond, e.g.
-#   bond_style harmonic / or a rigid link; atoms confined to the sphere surface
-#   (fix wall/region on a spherical shell, or re-projection after every run)
-#
-#   from lammps import lammps
-#   class LammpsSimulation:
-#       def __init__(self, input_file):
-#           self.lmp = lammps()
-#           self.lmp.file(input_file)
-#           self.ids = list(range(1, self.lmp.get_natoms() + 1))  # molecule-by-molecule order
-#       def set_surface_position(self, index, xyz): ...  # move atom self.ids[index], zero velocity
-#       def release(self, index, xyz): ...               # let the atom move again
-#       def set_driven_positions(self, indices, positions): ...
-#       def release_driven(self, indices): ...
-#       def set_radius(self, radius): ...                # update wall region, project atoms
-#       def add_molecule(self, first_index, positions, moleculeid):
-#           # create_atoms for both rows of `positions`, molecule id `moleculeid`,
-#           # one bond between them, then self.ids.extend(new atom ids)
-#           ...
-#       def delete_molecule(self, first_index, count):
-#           # group rm molecule ..., delete_atoms group rm bond yes molecule yes,
-#           # then del self.ids[first_index:first_index + count]
-#           ...
-#       def change_contour_length(self, index, delta): ...   # Right / Left arrow while grabbing an end
-#       def remove_junction(self, row): ...  # user removed a junction: remove it from both molecules
-#       def junction_vectors(self): ...  # (J, 3) closest-point vector stored when a junction formed
-#       def junction_forces(self): ...  # (J, 2, 3): spring force of molecule a / b on each junction
-#       def proximity(self): ...  # [(mol_a, mol_b, point_a, point_b)] for nearby unjoined segments
-#       def network(self): ...  # (junction positions, molecule pairs, lines), see DummySimulation.network
-#       def step(self):
-#           self.lmp.command("run 10 pre no post no")
-#           x = np.array(self.lmp.gather_atoms("x", 1, 3)).reshape(-1, 3)  # ordered by atom id
-#           return x[np.array(self.ids) - 1]
-
-
 def main(argv=None):
     args = parse_args(argv)                       # --help prints the summary and exits
     set_keyboard_layout(args.keyboard_layout)
@@ -2260,7 +2218,6 @@ def main(argv=None):
     sim = DummySimulation(points, moleculeids, center, volume_radius,
                           bead_radius=sphere_radius, min_distance=MIN_DISTANCE,
                           proximity_distance=PROXIMITY_DISTANCE)   # spring_rate, min_distance, ... tune here
-    # sim = LammpsSimulation("in.sim")
 
     def on_release(i, xyz):
         print(f"Chain end {i} (moleculeid={dragger.moleculeids[i]}) released at",
