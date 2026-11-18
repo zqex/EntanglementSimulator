@@ -26,26 +26,14 @@ There are different levels of descriptions of a mesh and its response to deforma
 ensures that chains does not pass through each other. Beads on the same chain do not interact, such
 that they act like one big thick rod of particles. Computationally simple, but also inefficient.
 
-* Cylinder based descriptions: Replace the straight rod like sections of beads with a single cylinder
-with radial WCA interactions. When two cylinders touch, kinks (aka WCA beads) are dynamically introduced to
-represent the entanglement. Neighboring beads on the same chain have an attractive FENE like potential
-within a contour length of 1.5. This means they tend to aggregate at entanglements as bead segments
-ensuring a potential barrier preserving entanglements. Kinks/beads are dynamically
-removed when 1) it does not interact with beads on other chains, 2) if it is only the outermost beads
-in a segment of intramolecular beads, 3) the resulting straight line does not cause entanglement creation.
-Computationally we get rid of all the dummy beads in the straight sections, but dynamically retain a
-KG model at the entanglement points. The time step is comparable to KG as the rods and beads still interact via WCA.
+* Cylinder based descriptions: Replace the straight rod-like sections of beads with a single cylinder
+with radial WCA interactions, but retain bead resolution at entanglements. Computationally simpler as
+we reduce the number of beads, but the time step is comparable to KG as the rods and beads still interact via WCA.
 
 * Finite-width vertex based descriptions: We retain the idea of a lines as finite sized cylinders, but
-now a line has no interaction. When two lines touch (at a finite-distance) they are connected by a
-vertex at the closest point. The vertex stores a vector of how they approached each other. The vector
-has a constant length and acts as a rigid rod always turning to oppose the strand generated forces. For nearly straight
-conformations this vector dynamics is unstable and needs stabilization tricks. The vertex is kept while
-strands are in compression, but is brokwn when it is in tension. Thus compared to the descriptions above, the
-entanglement dynamics is now approximated at the level of strand pairs. We explicitly need to deal
-with (or approximate) collisions between different entanglements and cross-links. Computationally, this
-vastly more complex than the models above, however, the level of coarse-graining also suggests that the
-model would be faster to simulate.
+now a line has no interactions. Computationally, this vastly more complex than the models above as we
+need to deal with collisions between entanglement vertices, however, the level of coarse-graining also
+suggests that such a model is faster to simulate.
 
 * Zero-width vertex based descriptions. The lines are now zero width. Like the finite-width model collisions
 (during a timestep) can be detected and entanglements dynamically introduced and removed. The stability
@@ -53,7 +41,8 @@ issue is resolved. As above we explicitly need to deal with all types of entangl
 this should probably be the fastest model to simulate.
 
 If we want to reconstitute the original bead based PPA mesh, then this is duable with the cylinder based
-description, but only approximate with the vertex based descriptions. 
+description, but only approximate with the vertex based descriptions, since they are not able to
+represent all the intricate structures formed by the beads in entanglements.
 
 
 ## Bead based mesh simulator
@@ -66,9 +55,36 @@ You can interactively grab and drag chain ends on the surface. Use shift and mou
 
 Use a add new chains to make arbitrary complicated entanglements. Grab the end of a bead and use left or right arrow to add or remove beads to the chain. You can also grab and press 'd' to delete a polymer. Some times chains will pass through each other, to avoid that add more beads along the contour. The beads are added between the end and the first internal bead. When you grow or shrink the volume (keys r/R), beads are inserted or removed, such that the entanglement is essentially unaffected. Several of the short-cut keys for kgview.py also works for beadppa.py. Run beadppa.py --help for complete information.
 
-## lineppa.py  Finite size vertex mesh model
+
+
+## cylppa.py Cylinder mesh model
+
+![Screenshot of lineppa.py.](cylppa.png)
+
+When two cylinders touch that is they are within MIN_DISTANCE of each other, kinks (aka WCA beads) are dynamically
+introduced to represent the entanglement. Beads interact via repulsive WCA forces with all spatially nearby beads,
+thus locally resolving the entanglement dynamics. To create a local KG like bead structure, neighboring beads on
+the same chain have an attractive FENE like potential within a contour length of 1.5, such that they tend to aggregate
+as a segment of beads. This creates the KG like potential barrier such that the entanglement is stable. 
+
+A kink/bead is dynamically removed when 1) it does not interact with beads on other chains, 2) if it is
+only the outermost beads in a segment of intramolecular beads (up to a certain contour distance), 3) the
+resulting straight line does not cause immediate entanglement creation. This check is performed every so often,
+since it is more costly than resolving the force dynamics.
+
+
+## lineppa.py  Finite-width vertex mesh model
 
 ![Screenshot of lineppa.py.](lineppa.png)
+
+ When two lines touch (at a finite-distance) they are connected by a
+vertex at the closest point. The vertex stores a vector of how they approached each other. The vector
+has a constant length and acts as a rigid rod always turning to oppose the strand generated forces. For nearly straight
+conformations this vector dynamics is unstable and needs stabilization tricks. The vertex is kept while
+strands are in compression, but is brokwn when it is in tension. Thus compared to the descriptions above, the
+entanglement dynamics is now approximated at the level of strand pairs. We explicitly need to deal
+with (or approximate) collisions between different entanglements and cross-links.
+
 
 An attempt at implementing lineppa logic, the script is based on beadppa and many of the shortcuts still apply. Polymers are now straight lines. As in beadppa the ends can be moved on the spherical surface, and chains can be added and removed. The left and right arrow now insert additional contour length at the corresponding chain end.
 
@@ -83,15 +99,6 @@ of closest approach of what would be the beads in a beadppa.
 
 
 ** todo ** : No support for cross-links or handling collisions between entanglements.
-
-## cylinderppa.py  Finite size cylinder mesh model
-
-![Screenshot of lineppa.py.](cylppa.png)
-
-
-I have not yet looked into this. The vertex model is complicated because you can create composite vertices of entanglement and cross-link vertices, because lines have zero width, and implementing each of these (up to some level of complexity) is nasty. On the other hand the graph structure of the resulting mesh is very natural and coarse-grained description of the physics. 
-
-In the cylinder model we take the diameter of beads serious, and reflect this in the diameter of the lines. Thus entanglement vertices are never created, but kinks are created along the cylinders where they need to have a kink due to another cylinder. In this case, cross-link and entanglement coupling is simple, since they are fat objects that can never overlap, and each kink moves with the net force acting on it but with the constraint that no point on two line segments gets within MIN_DISTANCE from each other. This requires modelling repulsive line-line interactions and introducing and removing kinks accordingly. 
 
 
 
